@@ -69,6 +69,37 @@ int32_t J9::TransformUtil::getLoopNestingDepth(TR::Compilation *comp, TR::Block 
    return nestingDepth;
    }
 
+bool
+dontRefineInvokeBasic() //XXX
+   {
+   static const bool disable = feGetEnv("TR_dontRefineInvokeBasic") != NULL;
+   return disable;
+   }
+
+bool
+dontRefineLinkTo(TR::RecognizedMethod rm) //XXX
+   {
+   static const bool disable = feGetEnv("TR_dontRefineLinkTo") != NULL;
+   if (disable)
+      return true;
+
+   static const bool disableStatic = feGetEnv("TR_dontRefineLinkToStatic") != NULL;
+   static const bool disableSpecial = feGetEnv("TR_dontRefineLinkToSpecial") != NULL;
+   static const bool disableVirtual = feGetEnv("TR_dontRefineLinkToVirtual") != NULL;
+   switch (rm)
+      {
+      case TR::java_lang_invoke_MethodHandle_linkToStatic:
+         return disableStatic;
+      case TR::java_lang_invoke_MethodHandle_linkToSpecial:
+         return disableSpecial;
+      case TR::java_lang_invoke_MethodHandle_linkToVirtual:
+         return disableVirtual;
+      default:
+         TR_ASSERT_FATAL(false, "unexpected recognized method");
+         return false;
+      }
+   }
+
 /*
  * Generate trees for call to jitRetranslateCallerWithPrep to trigger recompilation from JIT-Compiled code.
  */
@@ -3117,6 +3148,10 @@ J9::TransformUtil::refineMethodHandleInvokeBasic(TR::Compilation* comp, TR::Tree
    {
 #if defined(J9VM_OPT_OPENJDK_METHODHANDLE)
    OMR::Logger *log = comp->log();
+
+   if (dontRefineInvokeBasic())
+      return false;
+
    if (!comp->fej9()->isResolvedDirectDispatchGuaranteed(comp))
       {
       logprintf(trace, log, "Cannot refine invokeBasic n%un %p without isResolvedDirectDispatchGuaranteed()\n",
@@ -3213,6 +3248,9 @@ J9::TransformUtil::refineMethodHandleLinkTo(TR::Compilation* comp, TR::TreeTop* 
    TR_J9VMBase* fej9 = comp->fej9();
    auto symRef = node->getSymbolReference();
    auto rm = node->getSymbol()->castToMethodSymbol()->getMandatoryRecognizedMethod();
+   if (dontRefineLinkTo(rm))
+      return false;
+
    const char *missingResolvedDispatch = NULL;
    const char *whichLinkTo = NULL;
    switch (rm)

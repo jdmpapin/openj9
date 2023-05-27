@@ -38,6 +38,9 @@
 #endif /* defined(J9VM_OPT_JITSERVER) */
 #include "ras/Logger.hpp"
 
+extern bool dontRefineInvokeBasic(); //XXX
+extern bool dontRefineLinkTo(TR::RecognizedMethod rm); //XXX
+
 const char* Operand::KnowledgeStrings[] = {"NONE", "OBJECT", "MUTABLE_CALLSITE_TARGET", "PREEXISTENT", "FIXED_CLASS", "KNOWN_OBJECT", "ICONST" };
 
 char*
@@ -1212,6 +1215,18 @@ InterpreterEmulator::refineResolvedCalleeForInvokestatic(
 
    bool isVirtual = false;
    TR::RecognizedMethod rm = callee->getRecognizedMethod();
+
+#if defined(J9VM_OPT_OPENJDK_METHODHANDLE)
+   switch (rm)
+      {
+      case TR::java_lang_invoke_MethodHandle_linkToStatic:
+      case TR::java_lang_invoke_MethodHandle_linkToSpecial:
+      case TR::java_lang_invoke_MethodHandle_linkToVirtual:
+         if (dontRefineLinkTo(rm))
+            return;
+      }
+#endif
+
    switch (rm)
       {
       // refine the ILGenMacros_invokeExact* callees
@@ -1587,7 +1602,7 @@ InterpreterEmulator::refineResolvedCalleeForInvokevirtual(TR_ResolvedMethod *&ca
          TR::KnownObjectTable::Index receiverIndex = topn(argNum)->getKnownObjectIndex();
          TR_J9VMBase* fej9 = comp()->fej9();
          auto targetMethod = fej9->targetMethodFromMethodHandle(comp(), receiverIndex);
-         if (!targetMethod) return;
+         if (!targetMethod || dontRefineInvokeBasic()) return;
 
          TR_ResolvedMethod * refinedMethod = fej9->createResolvedMethod(comp()->trMemory(), targetMethod, callee->owningMethod());
          heuristicTrace(tracer(), "Pre-refinement invokebasic numargs: %d. Refined invokeBasic numArgs: %d\n",argNum, refinedMethod->numberOfExplicitParameters());
