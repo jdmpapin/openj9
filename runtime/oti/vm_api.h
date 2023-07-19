@@ -3037,6 +3037,16 @@ UDATA
 getStaticFields(J9VMThread *currentThread, J9ROMClass *romClass, J9ROMFieldShape **outFields);
 
 /**
+* @brief Find the J9ROMFieldShape of the static field with the given offset.
+* @param *currentThread
+* @param *clazz The defining class of the static field.
+* @param offset The offset of the static field (from ramStatics)
+* @return The J9ROMFieldShape, or NULL if there is no matching static field.
+*/
+J9ROMFieldShape *
+findStaticFieldByOffset(J9VMThread *currentThread, J9Class *clazz, UDATA offset);
+
+/**
  *@brief find field in class
  *@param vmstruct vmthread token
  *@param clazz ramclass

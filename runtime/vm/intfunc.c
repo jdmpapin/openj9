@@ -76,6 +76,7 @@ J9InternalVMFunctions J9InternalFunctions = {
 	instanceFieldOffset,
 	staticFieldAddress,
 	getStaticFields,
+	findStaticFieldByOffset,
 	internalFindKnownClass,
 	resolveKnownClass,
 	computeHashForUTF8,
