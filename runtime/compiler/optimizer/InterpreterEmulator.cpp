@@ -230,6 +230,12 @@ InterpreterEmulator::printOperandArray(OperandArray* operands)
 void InterpreterEmulator::mergeOperandArray(OperandArray *first, OperandArray *second)
    {
    OMR::Logger *log = comp()->log();
+
+   uint32_t size = first->size();
+   TR_ASSERT_FATAL(
+      second->size() == size,
+      "attempt to merge operand arrays of different sizes");
+
    bool enableTrace = tracer()->debugLevel();
    if (enableTrace)
       {
@@ -238,17 +244,20 @@ void InterpreterEmulator::mergeOperandArray(OperandArray *first, OperandArray *s
       }
 
    bool changed = false;
-   for (int i = 0; i < _numSlots; i++)
+
+   for (uint32_t i = 0; i < size; i++)
       {
-      Operand* firstObj = (*first)[i];
-      Operand* secondObj = (*second)[i];
+      Operand *firstVal = (*first)[i];
+      Operand *secondVal = (*second)[i];
+      Operand *merged = firstVal->merge(secondVal);
+      if (merged == NULL)
+         merged = _unknownOperand;
 
-      firstObj = firstObj->merge(secondObj);
-      if (firstObj == NULL)
-         firstObj = _unknownOperand;
-
-      if (firstObj != (*first)[i])
+      if (merged != firstVal)
+         {
          changed = true;
+         (*first)[i] = merged;
+         }
       }
 
    if (enableTrace)
@@ -470,10 +479,7 @@ InterpreterEmulator::saveStack(int32_t targetIndex)
       if (!_stacks[targetIndex])
          _stacks[targetIndex] = new (trStackMemory()) ByteCodeStack(*_stack);
       else
-         {
-         TR_ASSERT_FATAL(_stacks[targetIndex]->size() == _stack->size(), "operand stack from two paths must have the same size, predecessor bci %d target bci %d\n", _bcIndex, targetIndex);
          mergeOperandArray(_stacks[targetIndex], _stack);
-         }
       }
 
    // Propagate local object info to successor
