@@ -5466,10 +5466,31 @@ TR_J9ByteCodeIlGenerator::loadSymbol(TR::ILOpCodes loadop, TR::SymbolReference *
    return node;
    }
 
+#include <time.h>
+
 void
 TR_J9ByteCodeIlGenerator::loadClassObject(int32_t cpIndex)
    {
    void * classObject = method()->getClassFromConstantPool(comp(), cpIndex);
+
+   static const char * const testSleepSec = feGetEnv("TR_testHcrRaceSec");
+   J9Class *j9c = (J9Class*)classObject;
+   if (testSleepSec != NULL && j9c != NULL)
+      {
+      J9ROMClass *origRomClass = j9c->romClass;
+      fprintf(stderr, "j9class %p ROM class: %p\n", j9c, origRomClass);
+
+      struct timespec sleep_duration;
+      sleep_duration.tv_sec = atoi(testSleepSec);
+      sleep_duration.tv_nsec = 0;
+      fprintf(stderr, "sleeping for %ds\n", (int)sleep_duration.tv_sec);
+      nanosleep(&sleep_duration, NULL); // time for concurrent redefinition
+
+      J9ROMClass *romClass = j9c->romClass;
+      const char *comment = romClass == origRomClass ? "ok" : "CHANGED";
+      fprintf(stderr, "j9class %p ROM class: %p (%s)\n", j9c, romClass, comment);
+      }
+
    loadSymbol(TR::loadaddr, symRefTab()->findOrCreateClassSymbol(_methodSymbol, cpIndex, classObject));
    }
 
