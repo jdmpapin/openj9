@@ -1152,6 +1152,8 @@ const char TR_SharedCacheRelocationRuntime::aotHeaderKey[] = "J9AOTHeader";
 // When we write out the header, we don't seem to include the \0 character at the end of the string.
 const UDATA TR_SharedCacheRelocationRuntime::aotHeaderKeyLength = sizeof(TR_SharedCacheRelocationRuntime::aotHeaderKey) - 1;
 
+const TR_AOTHeader *TR_SharedCacheRelocationRuntime::_storedAOTHeader = NULL;
+
 U_8 *
 TR_SharedCacheRelocationRuntime::allocateSpaceInCodeCache(UDATA codeSize)
    {
@@ -1442,11 +1444,20 @@ TR_SharedCacheRelocationRuntime::validateAOTHeader(TR_FrontEnd *fe, J9VMThread *
 const TR_AOTHeader *
 TR_SharedCacheRelocationRuntime::getStoredAOTHeaderWithConfig(J9SharedClassConfig *sharedClassConfig, J9VMThread *curThread)
    {
+   const TR_AOTHeader *header = _storedAOTHeader;
+   if (header != NULL)
+      return header;
+
    J9SharedDataDescriptor firstDescriptor;
    firstDescriptor.address = NULL;
    sharedClassConfig->findSharedData(curThread, aotHeaderKey, aotHeaderKeyLength,
                                      J9SHR_DATA_TYPE_AOTHEADER, FALSE, &firstDescriptor, NULL);
-   return (const TR_AOTHeader *)firstDescriptor.address;
+   header = (const TR_AOTHeader *)firstDescriptor.address;
+
+   if (header != NULL)
+      cacheStoredAOTHeader(header);
+
+   return header;
    }
 
 const TR_AOTHeader *
@@ -1495,6 +1506,8 @@ TR_SharedCacheRelocationRuntime::storeAOTHeader(TR_FrontEnd *fe, J9VMThread *cur
                                                                   &dataDescriptor);
    if (store)
       {
+      cacheStoredAOTHeader((const TR_AOTHeader*)store);
+
       /* In the case of a single SCC, if a header already exists,
        * the old one is returned. Thus, we must check the validity
        * of the header.
@@ -1534,6 +1547,24 @@ TR_SharedCacheRelocationRuntime::storeAOTHeader(TR_FrontEnd *fe, J9VMThread *cur
       TR_J9SharedCache::setStoreSharedDataFailedLength(aotHeaderLen);
       return false;
       }
+   }
+
+void
+TR_SharedCacheRelocationRuntime::cacheStoredAOTHeader(const TR_AOTHeader *header)
+   {
+   TR_ASSERT_FATAL(header != NULL, "attempt to cache null stored AOT header");
+
+   uintptr_t alreadyCachedAddr = VM_AtomicSupport::lockCompareExchange(
+      (volatile uintptr_t*)&_storedAOTHeader,
+      (uintptr_t)NULL,
+      (uintptr_t)header);
+
+   auto *alreadyCached = (const TR_AOTHeader*)alreadyCachedAddr;
+   TR_ASSERT_FATAL(
+      alreadyCached == NULL || alreadyCached == header,
+      "inconsistent stored AOT header pointers %p and %p",
+      alreadyCached,
+      header);
    }
 
 void TR_RelocationRuntime::initializeHWProfilerRecords(TR::Compilation *comp)

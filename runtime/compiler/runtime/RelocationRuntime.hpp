@@ -499,8 +499,12 @@ private:
 
       bool _sharedCacheIsFull;
 
+      static void cacheStoredAOTHeader(const TR_AOTHeader *header);
+
       static const char aotHeaderKey[];
       static const UDATA aotHeaderKeyLength;
+
+      static const TR_AOTHeader *_storedAOTHeader;
 };
 
 #if defined(J9VM_OPT_JITSERVER)
