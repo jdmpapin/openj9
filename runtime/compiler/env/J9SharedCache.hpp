@@ -30,6 +30,7 @@
 #include "env/TRMemory.hpp"
 #include "env/jittypes.h"
 #include "il/DataTypes.hpp"
+#include "infra/map.hpp"
 #include "runtime/J9Runtime.hpp"
 #include "runtime/RuntimeAssumptions.hpp"
 
@@ -876,5 +877,32 @@ private:
    };
 
 #endif /* defined(J9VM_OPT_JITSERVER) */
+
+/**
+ * \brief Maps classes to their corresponding class chains within a compilation.
+ *
+ * This is only possible because compilations are prevented from seeing the
+ * effects of class redefinition, which could otherwise cause a class to fail
+ * to match a chain it had previously matched.
+ */
+class TR_PerCompilationClassChainCache
+   {
+   public:
+   TR_PerCompilationClassChainCache(TR::Region &region) : _map(region) {}
+
+   private:
+   friend class TR_J9SharedCache;
+
+   struct Entry
+      {
+      uintptr_t *_chain;
+      uintptr_t _offset;
+      TR_YesNoMaybe _matches;
+      };
+
+   Entry *entry(J9Class *clazz);
+
+   TR::map<J9Class*, Entry> _map;
+   };
 
 #endif

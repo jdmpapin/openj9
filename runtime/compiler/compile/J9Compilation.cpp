@@ -168,6 +168,7 @@ J9::Compilation::Compilation(int32_t id,
       m,
       optimizationPlan,
       target),
+   _classChainCache(new (heapMemoryRegion) TR_PerCompilationClassChainCache(heapMemoryRegion)),
    _updateCompYieldStats(
       options.getOption(TR_EnableCompYieldStats) ||
       options.getVerboseOption(TR_VerboseCompYieldStats) ||

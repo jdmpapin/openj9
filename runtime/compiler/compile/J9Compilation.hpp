@@ -507,6 +507,8 @@ class OMR_EXTENSIBLE Compilation : public OMR::CompilationConnector
    uintptr_t populateAOTMethodDependencies(TR_OpaqueClassBlock *definingClass, Vector<uintptr_t> &chainBuffer);
 #endif
 
+   TR_PerCompilationClassChainCache *classChainCache() { return _classChainCache; }
+
    /**
     * \brief Get the class loaders that are known to be permanent.
     * \return a vector of pointers to all known-permanent class loaders
@@ -543,6 +545,8 @@ private:
 #if !defined(PERSISTENT_COLLECTIONS_UNSUPPORTED)
    void addAOTMethodDependency(uintptr_t offset, bool classIsInitialized);
 #endif  /*  !defined(PERSISTENT_COLLECTIONS_UNSUPPORTED) */
+
+   TR_PerCompilationClassChainCache *_classChainCache;
 
    J9VMThread *_j9VMThread;
 

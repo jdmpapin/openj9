@@ -1023,6 +1023,19 @@ TR_J9SharedCache::rememberClass(J9Class *clazz, const AOTCacheClassChainRecord *
    {
    uintptr_t *chainData = NULL;
 #if defined(J9VM_OPT_SHARED_CLASSES) && (defined(TR_HOST_X86) || defined(TR_HOST_POWER) || defined(TR_HOST_S390) || defined(TR_HOST_ARM) || defined(TR_HOST_ARM64))
+   TR::Compilation *comp = TR::comp();
+   auto *cacheEntry = comp == NULL ? NULL : comp->classChainCache()->entry(clazz);
+   if (cacheEntry != NULL)
+      {
+      if (cacheEntry->_matches == TR_no)
+         return TR_SharedCache::INVALID_CLASS_CHAIN_OFFSET;
+      else if (cacheEntry->_matches == TR_yes
+               && cacheEntry->_offset != TR_SharedCache::INVALID_CLASS_CHAIN_OFFSET)
+         return cacheEntry->_offset;
+      }
+
+   // The result has not yet been determined in this compilation.
+
    TR_J9VMBase *fej9 = (TR_J9VMBase *)fe();
    J9ROMClass *romClass = TR::Compiler->cls.romClassOf(fej9->convertClassPtrToClassOffset(clazz));
 
@@ -1045,12 +1058,24 @@ TR_J9SharedCache::rememberClass(J9Class *clazz, const AOTCacheClassChainRecord *
    chainData = findChainForClass(clazz, key, keyLength);
    if (chainData != NULL)
       {
+      TR_ASSERT_FATAL(
+         cacheEntry == NULL || cacheEntry->_chain == chainData,
+         "findChainForClass should have cached the class chain");
+
       uintptr_t chainOffset = TR_SharedCache::INVALID_CLASS_CHAIN_OFFSET;
+
+      // Because chainData is non-null, classMatchesCachedVersion() can't
+      // spuriously fail here.
       if (classMatchesCachedVersion(clazz, chainData))
          {
+         if (cacheEntry != NULL)
+            cacheEntry->_matches = TR_yes;
+
          if (isPointerInSharedCache(chainData, &chainOffset))
             {
             LOG(1, "\tcurrent class and class chain found (%p) are identical; returning the class chain\n", chainData);
+            if (cacheEntry != NULL)
+               cacheEntry->_offset = chainOffset;
             }
          else
             {
@@ -1059,8 +1084,12 @@ TR_J9SharedCache::rememberClass(J9Class *clazz, const AOTCacheClassChainRecord *
          }
       else
          {
+         if (cacheEntry != NULL)
+            cacheEntry->_matches = TR_no;
+
          LOG(1, "\tcurrent class and class chain found (%p) do not match, so cannot use class chain; returning INVALID_CLASS_CHAIN_OFFSET\n", chainData);
          }
+
       return chainOffset;
       }
 
@@ -1105,6 +1134,11 @@ TR_J9SharedCache::rememberClass(J9Class *clazz, const AOTCacheClassChainRecord *
    if (chainData)
       {
       LOG(1, "\tstored data, chain at %p\n", chainData);
+      if (cacheEntry != NULL)
+         {
+         cacheEntry->_chain = chainData;
+         cacheEntry->_matches = TR_yes;
+         }
       }
    else
       {
@@ -1117,6 +1151,12 @@ TR_J9SharedCache::rememberClass(J9Class *clazz, const AOTCacheClassChainRecord *
 #endif
    uintptr_t chainOffset = TR_SharedCache::INVALID_CLASS_CHAIN_OFFSET;
    isPointerInSharedCache(chainData, &chainOffset);
+   if (cacheEntry != NULL
+       && chainOffset != TR_SharedCache::INVALID_CLASS_CHAIN_OFFSET)
+      {
+      cacheEntry->_offset = chainOffset;
+      }
+
    return chainOffset;
    }
 
@@ -1242,6 +1282,11 @@ TR_J9SharedCache::findChainForClass(J9Class *clazz, const char *key, uint32_t ke
    {
    UDATA * chainForClass = NULL;
 #if defined(J9VM_OPT_SHARED_CLASSES) && (defined(TR_HOST_X86) || defined(TR_HOST_POWER) || defined(TR_HOST_S390) || defined(TR_HOST_ARM) || defined(TR_HOST_ARM64))
+   TR::Compilation *comp = TR::comp();
+   auto *cacheEntry = comp == NULL ? NULL : comp->classChainCache()->entry(clazz);
+   if (cacheEntry != NULL && cacheEntry->_chain != NULL)
+      return cacheEntry->_chain;
+
    J9SharedDataDescriptor dataDescriptor;
    dataDescriptor.address = NULL;
    TR_J9VMBase *fej9 = (TR_J9VMBase *)(fe());
@@ -1256,6 +1301,8 @@ TR_J9SharedCache::findChainForClass(J9Class *clazz, const char *key, uint32_t ke
                                        NULL);
 
    chainForClass = (UDATA *) dataDescriptor.address;
+   if (cacheEntry != NULL)
+      cacheEntry->_chain = chainForClass;
 #endif
    return chainForClass;
    }
@@ -1963,3 +2010,11 @@ TR_J9DeserializerSharedCache::romMethodFromOffsetInSharedCache(uintptr_t offset)
    }
 
 #endif
+
+TR_PerCompilationClassChainCache::Entry *
+TR_PerCompilationClassChainCache::entry(J9Class *clazz)
+   {
+   Entry defaultEntry = { NULL, TR_SharedCache::INVALID_CLASS_CHAIN_OFFSET, TR_maybe };
+   auto it = _map.insert(std::make_pair(clazz, defaultEntry)).first;
+   return &it->second;
+   }
