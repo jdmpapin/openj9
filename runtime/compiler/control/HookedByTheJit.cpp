@@ -2077,9 +2077,8 @@ static void jitHookClassesUnload(J9HookInterface * * hookInterface, UDATA eventN
 
       }
 
-   // Here we need to set CompilationShouldBeInterrupted. Currently if the TR_EnableNoVMAccess is not
-   // set the compilation is stopped, but should be notify not to continue afterwards.
-   //
+   // Currently all compilations are paused. Notify them not to continue once
+   // unloading is finished.
    compInfo->setAllCompilationsShouldBeInterrupted();
 
    bool firstRange = true;
@@ -3003,19 +3002,6 @@ void jitSetMutableCallSiteTarget(J9VMThread *vmThread, j9object_t mcs, j9object_
       vmThread, mcs, targetOffset, newTarget, 0);
    }
 #endif
-
-#if defined(J9VM_GC_DYNAMIC_CLASS_UNLOADING)
-static void jitHookInterruptCompilation(J9HookInterface * * hookInterface, UDATA eventNum, void * eventData, void * userData)
-   {
-   MM_InterruptCompilationEvent * interruptCompilationEvent = (MM_InterruptCompilationEvent *)eventData;
-   J9VMThread * vmThread = interruptCompilationEvent->currentThread;
-   J9JITConfig * jitConfig = vmThread->javaVM->jitConfig;
-   TR::CompilationInfo * compInfo = TR::CompilationInfo::get(jitConfig);
-
-   //compInfo->setAllCompilationsShouldBeInterrupted();
-   compInfo->getPersistentInfo()->setGCwillBlockOnClassUnloadMonitor();
-   }
-#endif /* defined (J9VM_GC_DYNAMIC_CLASS_UNLOADING)*/
 
 // jitUpdateMethodOverride is called indirectly from updateCHTable
 //
@@ -7851,7 +7837,6 @@ int32_t setUpHooks(J9JavaVM * javaVM, J9JITConfig * jitConfig, TR_FrontEnd * vm)
 #if defined(J9VM_JIT_DYNAMIC_LOOP_TRANSFER)
            (*vmHooks)->J9HookRegisterWithCallSite(vmHooks, J9HOOK_VM_CLASS_LOADERS_UNLOAD, jitHookClassLoadersUnload, OMR_GET_CALLSITE(), NULL) ||
 #endif
-           (*gcHooks)->J9HookRegisterWithCallSite(gcHooks, J9HOOK_MM_INTERRUPT_COMPILATION, jitHookInterruptCompilation, OMR_GET_CALLSITE(), NULL) ||
 #if JAVA_SPEC_VERSION >= 19
            (*gcHooks)->J9HookRegisterWithCallSite(gcHooks, J9HOOK_MM_WALKCONTINUATION, jitWalkContinuationStackFrames, OMR_GET_CALLSITE(), NULL) ||
 #endif /* JAVA_SPEC_VERSION >= 19 */

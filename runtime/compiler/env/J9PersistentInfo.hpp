@@ -130,8 +130,6 @@ class PersistentInfo : public OMR::PersistentInfoConnector
          _numVisitedSuperClasses(0),
          _tooManySuperClasses(false),
          _persistentClassLoaderTable(NULL),
-         _GCwillBlockOnClassUnloadMonitor(false),
-         _timeGCwillBlockOnClassUnloadMonitorWasSet(0),
          _numUnloadedClasses(0),
          _classLoadingPhaseGracePeriod(0),
          _startTime(0),
@@ -206,10 +204,6 @@ class PersistentInfo : public OMR::PersistentInfoConnector
       else
          _tooManySuperClasses = true;
       }
-
-   bool GCwillBlockOnClassUnloadMonitor() { return _GCwillBlockOnClassUnloadMonitor; }
-   void setGCwillBlockOnClassUnloadMonitor() { _GCwillBlockOnClassUnloadMonitor = true; _timeGCwillBlockOnClassUnloadMonitorWasSet = _elapsedTime;}
-   void resetGCwillBlockOnClassUnloadMonitor() { _GCwillBlockOnClassUnloadMonitor = false; }
 
    bool ensureUnloadedAddressSetsAreInitialized();
    void addUnloadedClass(TR_OpaqueClassBlock *clazz, uintptr_t startAddress, uint32_t size);
@@ -413,9 +407,6 @@ class PersistentInfo : public OMR::PersistentInfoConnector
    TR_OpaqueClassBlock **_visitedSuperClasses;
    int32_t _numVisitedSuperClasses;
    bool _tooManySuperClasses;
-
-   uint64_t _timeGCwillBlockOnClassUnloadMonitorWasSet; // ms; set by GC; RAS
-   bool _GCwillBlockOnClassUnloadMonitor;
 
    int32_t _classLoadingPhaseGracePeriod; // in ms
 

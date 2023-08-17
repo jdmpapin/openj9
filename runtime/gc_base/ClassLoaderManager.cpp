@@ -695,24 +695,14 @@ MM_ClassLoaderManager::enterClassUnloadMutex(MM_EnvironmentBase *env)
 	PORT_ACCESS_FROM_ENVIRONMENT(env);
 	U_64 quiesceTime = J9CONST64(0);
 	if (!_javaVM->isClassUnloadMutexHeldForRedefinition) {
+		U_64 startTime = j9time_hires_clock();
 #if defined(J9VM_JIT_CLASS_UNLOAD_RWMONITOR)
-		if (0 != omrthread_rwmutex_try_enter_write(_javaVM->classUnloadMutex))
+		omrthread_rwmutex_enter_write(_javaVM->classUnloadMutex);
 #else /* defined(J9VM_JIT_CLASS_UNLOAD_RWMONITOR) */
-		if (0 != omrthread_monitor_try_enter(_javaVM->classUnloadMutex))
+		omrthread_monitor_enter(_javaVM->classUnloadMutex);
 #endif /* defined(J9VM_JIT_CLASS_UNLOAD_RWMONITOR) */
-		{
-			/* The JIT currently is in the monitor */
-			/* We must interrupt the JIT compilation so the GC can unload classes */
-			U_64 startTime = j9time_hires_clock();
-			TRIGGER_J9HOOK_MM_INTERRUPT_COMPILATION(_extensions->hookInterface, (J9VMThread *)env->getLanguageVMThread());
-#if defined(J9VM_JIT_CLASS_UNLOAD_RWMONITOR)
-			omrthread_rwmutex_enter_write(_javaVM->classUnloadMutex);
-#else /* defined(J9VM_JIT_CLASS_UNLOAD_RWMONITOR) */
-			omrthread_monitor_enter(_javaVM->classUnloadMutex);
-#endif /* defined(J9VM_JIT_CLASS_UNLOAD_RWMONITOR) */
-			U_64 endTime = j9time_hires_clock();
-			quiesceTime = j9time_hires_delta(startTime, endTime, J9PORT_TIME_DELTA_IN_MICROSECONDS);
-		}
+		U_64 endTime = j9time_hires_clock();
+		quiesceTime = j9time_hires_delta(startTime, endTime, J9PORT_TIME_DELTA_IN_MICROSECONDS);
 	}
 	return quiesceTime;
 }

@@ -3628,45 +3628,32 @@ TR_J9VMBase::compilationShouldBeInterrupted(TR::Compilation * comp, TR_CallingCo
 
    if (!comp->getOption(TR_DisableNoVMAccess))
       {
-      bool exitClassUnloadMonitor = persistentMemory(_jitConfig)->getPersistentInfo()->GCwillBlockOnClassUnloadMonitor();
+      // release the classUnloadMonitor and then reacquire it. This will give GC a chance to cut in.
+#if defined(J9VM_GC_DYNAMIC_CLASS_UNLOADING)
+      bool hadClassUnloadMonitor = TR::MonitorTable::get()->readReleaseClassUnloadMonitor(compInfoPTB->getCompThreadId()) >= 0;
+      TR_ASSERT(hadClassUnloadMonitor, "Comp thread must hold classUnloadMonitor when compiling without VMaccess");
+#else // Class unloading is not possible
+      bool hadClassUnloadMonitor = false;
+      if (TR::Options::getCmdLineOptions()->getOption(TR_EnableHCR) || TR::Options::getCmdLineOptions()->getOption(TR_FullSpeedDebug))
+         {
+         hadClassUnloadMonitor = TR::MonitorTable::get()->readReleaseClassUnloadMonitor(compInfoPTB->getCompThreadId()) >= 0;
+         TR_ASSERT(hadClassUnloadMonitor, "Comp thread must hold classUnloadMonitor when compiling without VMaccess");
+         }
+#endif
+      //--- GC CAN INTERVENE HERE ---
+      TR_ASSERT((vmThread()->publicFlags & J9_PUBLIC_FLAGS_VM_ACCESS) == 0, "comp thread must not have vm access");
       if (comp->getOptions()->realTimeGC())
          {
-#if defined (J9VM_GC_REALTIME)
-         J9JavaVM *vm = _jitConfig->javaVM;
-         exitClassUnloadMonitor = exitClassUnloadMonitor || vm->omrVM->_gcCycleOn;
-#endif
+         // no compilation on application thread
+         TR_ASSERT(_compInfoPT, "Missing compilation info per thread.");
+         _compInfoPT->waitForGCCycleMonitor(false);
          }
-      if (exitClassUnloadMonitor)
+
+      TR::MonitorTable::get()->readAcquireClassUnloadMonitor(compInfoPTB->getCompThreadId());
+
+      if (compInfoPTB->compilationShouldBeInterrupted())
          {
-         // release the classUnloadMonitor and then reacquire it. This will give GC a chance to cut in.
-         persistentMemory(_jitConfig)->getPersistentInfo()->resetGCwillBlockOnClassUnloadMonitor();
-
-#if defined(J9VM_GC_DYNAMIC_CLASS_UNLOADING)
-         bool hadClassUnloadMonitor = TR::MonitorTable::get()->readReleaseClassUnloadMonitor(compInfoPTB->getCompThreadId()) >= 0;
-         TR_ASSERT(hadClassUnloadMonitor, "Comp thread must hold classUnloadMonitor when compiling without VMaccess");
-#else // Class unloading is not possible
-         bool hadClassUnloadMonitor = false;
-         if (TR::Options::getCmdLineOptions()->getOption(TR_EnableHCR) || TR::Options::getCmdLineOptions()->getOption(TR_FullSpeedDebug))
-            {
-            hadClassUnloadMonitor = TR::MonitorTable::get()->readReleaseClassUnloadMonitor(compInfoPTB->getCompThreadId()) >= 0;
-            TR_ASSERT(hadClassUnloadMonitor, "Comp thread must hold classUnloadMonitor when compiling without VMaccess");
-            }
-#endif
-         //--- GC CAN INTERVENE HERE ---
-         TR_ASSERT((vmThread()->publicFlags & J9_PUBLIC_FLAGS_VM_ACCESS) == 0, "comp thread must not have vm access");
-         if (comp->getOptions()->realTimeGC())
-            {
-            // no compilation on application thread
-            TR_ASSERT(_compInfoPT, "Missing compilation info per thread.");
-            _compInfoPT->waitForGCCycleMonitor(false);
-            }
-
-         TR::MonitorTable::get()->readAcquireClassUnloadMonitor(compInfoPTB->getCompThreadId());
-
-         if (compInfoPTB->compilationShouldBeInterrupted())
-            {
-            return true;
-            }
+         return true;
          }
       }
 

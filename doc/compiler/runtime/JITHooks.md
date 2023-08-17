@@ -91,7 +91,6 @@ HookedByTheJit.cpp.
 |`J9HOOK_VM_CLASS_LOADER_UNLOAD`|Notifies with the list of classloaders that have been unloaded.|The JIT uses this hook to clean up the DLT buffers.|Exclusive VM Access|
 |`J9HOOK_VM_CLASS_LOADERS_UNLOAD`|Notifies for each classloader that is unloaded.||Exclusive VM Access|
 |`J9HOOK_MM_CLASS_UNLOADING_END`|Notifies that the GC has finished unloading classes.||Exclusive VM Access|
-|`J9HOOK_MM_INTERRUPT_COMPILATION`|Notifies that JIT compilation should be interrupted in order for the GC to unload classes.|||
 |`J9HOOK_MM_WALKCONTINUATION`|Notifies when iterating continuation Object during GC clearable phase.|The JIT uses this hook to walk through related java stacks for preparing code cache reclaim.|||
 |`J9HOOK_VM_THREAD_CREATED`|Notifies when a thread has been created.|||
 |`J9HOOK_VM_THREAD_DESTROY`|Notifies when a thread has been destroyed.|||

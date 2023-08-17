@@ -738,7 +738,8 @@ MM_MetronomeDelegate::yieldFromClassUnloading(MM_EnvironmentRealtime *env)
 
 /**
  * The GC is required to hold the classUnloadMonitor while it is unloading classes.
- * This will ensure that the JIT will abort and ongoing compilations
+ * This will ensure that the JIT will not run concurrently. Any ongoing compilations
+ * will be interrupted by the J9HOOK_VM_CLASSES_UNLOAD hook.
  */
 void
 MM_MetronomeDelegate::lockClassUnloadMonitor(MM_EnvironmentRealtime *env)
@@ -746,20 +747,10 @@ MM_MetronomeDelegate::lockClassUnloadMonitor(MM_EnvironmentRealtime *env)
 	/* Grab the classUnloadMonitor so that the JIT and the GC will not interfere with each other */
 	if (!_javaVM->isClassUnloadMutexHeldForRedefinition) {
 #if defined(J9VM_JIT_CLASS_UNLOAD_RWMONITOR)
-		if (0 != omrthread_rwmutex_try_enter_write(_javaVM->classUnloadMutex)) {
+		omrthread_rwmutex_enter_write(_javaVM->classUnloadMutex);
 #else /* defined(J9VM_JIT_CLASS_UNLOAD_RWMONITOR) */
-		if (0 != omrthread_monitor_try_enter(_javaVM->classUnloadMutex)) {
+		omrthread_monitor_enter(_javaVM->classUnloadMutex);
 #endif /* defined(J9VM_JIT_CLASS_UNLOAD_RWMONITOR) */
-			/* Failed acquire the monitor so interrupt the JIT.  This will allow the GC
-			 * to continue unloading classes.
-			 */
-			TRIGGER_J9HOOK_MM_INTERRUPT_COMPILATION(_extensions->hookInterface, (J9VMThread *)env->getLanguageVMThread());
-#if defined(J9VM_JIT_CLASS_UNLOAD_RWMONITOR)
-			omrthread_rwmutex_enter_write(_javaVM->classUnloadMutex);
-#else /* defined(J9VM_JIT_CLASS_UNLOAD_RWMONITOR) */
-			omrthread_monitor_enter(_javaVM->classUnloadMutex);
-#endif /* defined(J9VM_JIT_CLASS_UNLOAD_RWMONITOR) */
-		}
 	}
 }
 

@@ -53,15 +53,6 @@ struct J9VMThread;
 	</event>
 
 	<event>
-		<name>J9HOOK_MM_INTERRUPT_COMPILATION</name>
-		<description>
-			Triggered when JIT compilation must be interrupted to allow the GC to unload classes during the GC cycle
-		</description>
-		<struct>MM_InterruptCompilationEvent</struct>
-		<data type="struct J9VMThread*" name="currentThread" description="current thread" />
-	</event>
-	
-	<event>
 		<name>J9HOOK_MM_OBJECT_ALLOCATION_SAMPLING</name>
 		<description>
 			Triggered when the object allocations sampling threshold is reached. The current thread has VM access,
