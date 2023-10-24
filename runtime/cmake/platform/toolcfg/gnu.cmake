@@ -20,7 +20,8 @@
 # SPDX-License-Identifier: EPL-2.0 OR Apache-2.0 OR GPL-2.0-only WITH Classpath-exception-2.0 OR GPL-2.0-only WITH OpenJDK-assembly-exception-1.0
 ################################################################################
 
-list(APPEND OMR_PLATFORM_COMPILE_OPTIONS -O3 -g -fstack-protector)
+# -O3
+list(APPEND OMR_PLATFORM_COMPILE_OPTIONS -g -fstack-protector)
 if(OMR_DDR AND NOT (CMAKE_C_COMPILER_VERSION VERSION_LESS 11))
 	# In gcc 11+ the default is to use DWARF version 5 which is not yet
 	# supported by ddrgen: tell the compiler to use DWARF version 4.
@@ -41,8 +42,8 @@ if(NOT OMR_OS_OSX AND (NOT OMR_OS_AIX OR NOT CMAKE_C_COMPILER_IS_OPENXL))
 endif()
 
 # add -U_FORTIFY_SOURCE and -D_FORTIFY_SOURCE=1
-omr_append_flags(CMAKE_C_FLAGS ${OMR_STRNCPY_FORTIFY_OPTIONS})
-omr_append_flags(CMAKE_CXX_FLAGS ${OMR_STRNCPY_FORTIFY_OPTIONS})
+#omr_append_flags(CMAKE_C_FLAGS ${OMR_STRNCPY_FORTIFY_OPTIONS})
+#omr_append_flags(CMAKE_CXX_FLAGS ${OMR_STRNCPY_FORTIFY_OPTIONS})
 if(J9VM_USE_RDYNAMIC AND OMR_OS_LINUX)
 	omr_append_flags(CMAKE_SHARED_LINKER_FLAGS "-rdynamic")
 endif()
