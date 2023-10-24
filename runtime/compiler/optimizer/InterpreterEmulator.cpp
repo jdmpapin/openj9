@@ -48,45 +48,15 @@ ObjectOperand::getSignature(TR::Compilation *comp, TR_Memory *trMemory)
    return _signature;
    }
 
-KnownObjOperand::KnownObjOperand(TR::KnownObjectTable::Index koi, TR_OpaqueClassBlock* clazz)
+KnownObjOperand::KnownObjOperand(
+   TR::KnownObjectTable *knot,
+   TR::KnownObjectTable::Index koi,
+   TR_OpaqueClassBlock *clazz)
    : knownObjIndex(koi), FixedClassOperand(clazz)
    {
    TR_ASSERT_FATAL(knownObjIndex != TR::KnownObjectTable::UNKNOWN, "Unexpected unknown object");
-   }
-
-TR_OpaqueClassBlock*
-KnownObjOperand::getClass()
-   {
-   if (_clazz)
-      return _clazz;
-
-   TR::Compilation* comp = TR::comp();
-   auto knot = comp->getOrCreateKnownObjectTable();
-   if (!knot || knot->isNull(knownObjIndex))
-      return NULL;
-
-   _clazz = comp->fej9()->getObjectClassFromKnownObjectIndex(comp, knownObjIndex);
-
-   return _clazz;
-   }
-
-ObjectOperand*
-KnownObjOperand::asObjectOperand()
-   {
-   if (getClass())
-      return this;
-
-   return NULL;
-   }
-
-// FixedClassOperand need the class, if we can't get the class, return NULL
-FixedClassOperand*
-KnownObjOperand::asFixedClassOperand()
-   {
-   if (getClass())
-      return this;
-
-   return NULL;
+   TR_ASSERT_FATAL(!knot->isNull(knownObjIndex), "Unexpected null index");
+   TR_ASSERT_FATAL(clazz != NULL, "missing type of known object");
    }
 
 Operand*
@@ -108,6 +78,14 @@ Operand::merge1(Operand* other)
    }
 
 Operand*
+NullOperand::merge1(Operand* other)
+   {
+   TR_ASSERT(other->getKnowledgeLevel() >= this->getKnowledgeLevel(), "Should be calling other->merge1(this)");
+   TR_ASSERT_FATAL(other->isNull(), "knowledge level should restrict other to null");
+   return this;
+   }
+
+Operand*
 IconstOperand::merge1(Operand* other)
    {
    TR_ASSERT(other->getKnowledgeLevel() >= this->getKnowledgeLevel(), "Should be calling other->merge1(this)");
@@ -126,6 +104,8 @@ ObjectOperand::merge1(Operand* other)
    ObjectOperand* otherObject = other->asObjectOperand();
    if (otherObject && this->_clazz == otherObject->_clazz)
       return this;
+   else if (other->isNull())
+      return this;
    else
       return NULL;
    }
@@ -138,6 +118,8 @@ PreexistentObjectOperand::merge1(Operand* other)
    PreexistentObjectOperand* otherPreexistentObjectOperand = other->asPreexistentObjectOperand();
    if (otherPreexistentObjectOperand && this->_clazz == otherPreexistentObjectOperand->_clazz)
       return this;
+   else if (other->isNull())
+      return this;
    else
       return NULL;
    }
@@ -149,6 +131,8 @@ FixedClassOperand::merge1(Operand* other)
    FixedClassOperand* otherFixedClass = other->asFixedClassOperand();
    if (otherFixedClass && this->_clazz == otherFixedClass->_clazz)
       return this;
+   else if (other->isNull())
+      return this;
    else
       return NULL;
    }
@@ -156,6 +140,7 @@ FixedClassOperand::merge1(Operand* other)
 Operand*
 KnownObjOperand::merge1(Operand* other)
    {
+   // TODO: allow null like in VP? add a non-null boolean?
    TR_ASSERT(other->getKnowledgeLevel() >= this->getKnowledgeLevel(), "Should be calling other->merge1(this)");
    KnownObjOperand* otherKnownObj = other->asKnownObject();
    if (otherKnownObj && this->knownObjIndex == otherKnownObj->knownObjIndex)
@@ -184,6 +169,12 @@ Operand::printToString(TR::StringBuf *buf)
    }
 
 void
+NullOperand::printToString(TR::StringBuf *buf)
+   {
+   buf->appendf("(null)");
+   }
+
+void
 IconstOperand::printToString(TR::StringBuf *buf)
    {
    buf->appendf("(iconst=%d)", intValue);
@@ -205,6 +196,28 @@ void
 MutableCallsiteTargetOperand::printToString(TR::StringBuf *buf)
    {
    buf->appendf("(mh=%d, mcs=%d)", getMethodHandleIndex(), getMutableCallsiteIndex());
+   }
+
+Operand *
+InterpreterEmulator::knownObjOperand(TR::KnownObjectTable::Index i, TR_OpaqueClassBlock *clazz)
+   {
+   if (i == TR::KnownObjectTable::UNKNOWN)
+      return _unknownOperand;
+
+   TR::KnownObjectTable *knot = comp()->getKnownObjectTable();
+   if (knot->isNull(i))
+      return _nullOperand;
+
+   if (clazz == NULL)
+      {
+      clazz = comp()->fej9()->getObjectClassFromKnownObjectIndex(comp(), i);
+
+      // TODO: assuming that #22364 has been merged, clazz can't be null.
+      if (clazz == NULL)
+         return _unknownOperand;
+      }
+
+   return new (trStackMemory()) KnownObjOperand(knot, i, clazz);
    }
 
 void
@@ -361,10 +374,7 @@ InterpreterEmulator::maintainStackForGetField()
       comp(), trStackMemory(), _calltarget->_calleeMethod, cpIndex, &type, &fieldOffset, false);
 
    TR::KnownObjectTable *knot = comp()->getKnownObjectTable();
-   if (knot &&
-       top()->asKnownObject() &&
-       !knot->isNull(top()->getKnownObjectIndex())
-       && type == TR::Address)
+   if (knot && top()->asKnownObject() && type == TR::Address)
       {
       if (fieldSymbol == NULL)
          {
@@ -438,11 +448,22 @@ InterpreterEmulator::maintainStackForGetField()
             // - printing the object's address, then allowing it to move; and
             // - observing the objects's address, then allowing it to move,
             //   then finally printing the observed address.
-            newOperand = new (trStackMemory()) KnownObjOperand(resultIndex);
-            int32_t len = 0;
-            debugTrace(tracer(), "dereference obj%d (%p)from field %s(offset = %d) of base obj%d(%p)\n",
-                  newOperand->getKnownObjectIndex(), (void *)fieldAddress, _calltarget->_calleeMethod->fieldName(cpIndex, len, this->trMemory()),
-                  fieldOffset, baseObjectIndex, baseObjectAddress);
+            newOperand = knownObjOperand(resultIndex);
+            if (tracer()->debugLevel())
+               {
+               _operandBuf->clear();
+               newOperand->printToString(_operandBuf);
+               int32_t len = 0;
+               debugTrace(
+                  tracer(),
+                  "dereference obj%d (%p), field +0x%x %s -> value %p: %s\n",
+                  baseObjectIndex,
+                  baseObjectAddress,
+                  fieldOffset,
+                  _calltarget->_calleeMethod->fieldName(cpIndex, len, this->trMemory()),
+                  (void *)fieldAddress,
+                  _operandBuf->text());
+               }
 
             if (resultIndex != TR::KnownObjectTable::UNKNOWN)
                {
@@ -494,6 +515,7 @@ InterpreterEmulator::initializeIteratorWithState()
    {
    _iteratorWithState = true;
    _unknownOperand = new (trStackMemory()) Operand();
+   _nullOperand = new (trStackMemory()) NullOperand();
    uint32_t size = this->maxByteCodeIndex() + 5;
    _flags  = (flags8_t *) this->trMemory()->allocateStackMemory(size * sizeof(flags8_t));
    _stacks = (ByteCodeStack * *) this->trMemory()->allocateStackMemory(size * sizeof(ByteCodeStack *));
@@ -666,17 +688,8 @@ InterpreterEmulator::maintainStack(TR_J9ByteCode bc)
       case J9BCiconst4:  push (new (trStackMemory()) IconstOperand(4)); break;
       case J9BCiconst5:  push (new (trStackMemory()) IconstOperand(5)); break;
       case J9BCaconstnull:
-         {
-         TR::KnownObjectTable *knot = comp()->getKnownObjectTable();
-         if (knot)
-            {
-            TR::KnownObjectTable::Index koi = 0; // special index for null
-            push(new (trStackMemory()) KnownObjOperand(koi));
-            }
-         else
-            pushUnknownOperand();
+         push(_nullOperand);
          break;
-         }
       case J9BCifne:
          push (new (trStackMemory()) IconstOperand(0));
          maintainStackForIf(J9BCificmpne);
@@ -829,10 +842,7 @@ InterpreterEmulator::maintainStackForGetStatic()
          }
       }
 
-   if (knownObjectIndex != TR::KnownObjectTable::UNKNOWN)
-      push(new (trStackMemory()) KnownObjOperand(knownObjectIndex));
-   else
-      pushUnknownOperand();
+   push(knownObjOperand(knownObjectIndex));
    }
 
 void
@@ -868,7 +878,7 @@ InterpreterEmulator::maintainStackForldc(int32_t cpIndex)
             if (knot)
                {
                TR::KnownObjectTable::Index koi = knot->getOrCreateIndexAt(location);
-               push(new (trStackMemory()) KnownObjOperand(koi));
+               push(knownObjOperand(koi));
                debugTrace(tracer(), "aload known obj%d from ldc %d", koi, cpIndex);
 
                J9::ConstProvenanceGraph *cpg = comp()->constProvenanceGraph();
@@ -1043,7 +1053,7 @@ InterpreterEmulator::getReturnValue(TR_ResolvedMethod *callee)
          if (targetIndex == TR::KnownObjectTable::UNKNOWN)
             return NULL;
 
-         result = new (trStackMemory()) KnownObjOperand(targetIndex);
+         result = knownObjOperand(targetIndex);
          break;
          }
 #endif
@@ -1122,11 +1132,11 @@ InterpreterEmulator::getReturnValue(TR_ResolvedMethod *callee)
          TR::KnownObjectTable::Index mhIndex = top()->getKnownObjectIndex();
          debugTrace(tracer(), "Known DirectMethodHandle koi %d\n", mhIndex);
          TR::KnownObjectTable *knot = comp()->getKnownObjectTable();
-         if (knot && mhIndex != TR::KnownObjectTable::UNKNOWN && !knot->isNull(mhIndex))
+         if (knot && mhIndex != TR::KnownObjectTable::UNKNOWN)
             {
             TR::KnownObjectTable::Index memberIndex = comp()->fej9()->getMemberNameFieldKnotIndexFromMethodHandleKnotIndex(comp(), mhIndex, "member");
             debugTrace(tracer(), "Known internal member name koi %d\n", memberIndex);
-            result = new (trStackMemory()) KnownObjOperand(memberIndex);
+            result = knownObjOperand(memberIndex);
             }
          break;
          }
@@ -1136,11 +1146,11 @@ InterpreterEmulator::getReturnValue(TR_ResolvedMethod *callee)
          TR::KnownObjectTable::Index mhIndex = top()->getKnownObjectIndex();
          debugTrace(tracer(), "Known DirectMethodHandle koi %d\n", mhIndex);
          TR::KnownObjectTable *knot = comp()->getKnownObjectTable();
-         if (knot && mhIndex != TR::KnownObjectTable::UNKNOWN && !knot->isNull(mhIndex))
+         if (knot && mhIndex != TR::KnownObjectTable::UNKNOWN)
             {
             TR::KnownObjectTable::Index memberIndex = comp()->fej9()->getMemberNameFieldKnotIndexFromMethodHandleKnotIndex(comp(), mhIndex, "initMethod");
             debugTrace(tracer(), "Known internal member name koi %d\n", memberIndex);
-            result = new (trStackMemory()) KnownObjOperand(memberIndex);
+            result = knownObjOperand(memberIndex);
             }
          break;
          }
@@ -1158,8 +1168,7 @@ InterpreterEmulator::getReturnValue(TR_ResolvedMethod *callee)
               && !knot->isNull(adIndex))
             {
             TR::KnownObjectTable::Index mhIndex = comp()->fej9()->getMethodHandleTableEntryIndex(comp(), vhIndex, adIndex);
-            if (mhIndex != TR::KnownObjectTable::UNKNOWN)
-               result = new (trStackMemory()) KnownObjOperand(mhIndex);
+            result = knownObjOperand(mhIndex);
             }
          break;
          }
@@ -1171,8 +1180,7 @@ InterpreterEmulator::getReturnValue(TR_ResolvedMethod *callee)
          if (knot && layoutIndex != TR::KnownObjectTable::UNKNOWN && !knot->isNull(layoutIndex))
             {
             TR::KnownObjectTable::Index vhIndex = comp()->fej9()->getLayoutVarHandle(comp(), layoutIndex);
-            if (vhIndex != TR::KnownObjectTable::UNKNOWN)
-               result = new (trStackMemory()) KnownObjOperand(vhIndex);
+            result = knownObjOperand(vhIndex);
             }
          break;
          }
@@ -1181,7 +1189,7 @@ InterpreterEmulator::getReturnValue(TR_ResolvedMethod *callee)
          break;
       }
 
-   if (result != NULL)
+   if (result != NULL && result != _unknownOperand)
       {
       if (result->asIconst() != NULL)
          {
@@ -1498,12 +1506,7 @@ InterpreterEmulator::updateKnotAndCreateCallSiteUsingInvokeCacheArray(TR_Resolve
    TR_J9VMBase *fej9 = comp()->fej9();
    TR::KnownObjectTable::Index idx = fej9->getKnotIndexOfInvokeCacheArrayAppendixElement(comp(), invokeCacheArray);
    if (_iteratorWithState)
-      {
-      if (idx != TR::KnownObjectTable::UNKNOWN)
-         push(new (trStackMemory()) KnownObjOperand(idx));
-      else
-         pushUnknownOperand();
-      }
+      push(knownObjOperand(idx));
 
    TR_ResolvedMethod * targetMethod = fej9->targetMethodFromInvokeCacheArrayMemberNameObj(comp(), owningMethod, invokeCacheArray);
 
@@ -1965,7 +1968,7 @@ InterpreterEmulator::createOperandFromPrexArg(TR_PrexArgument* prexArgument)
    switch (prexKnowledge)
       {
       case KNOWN_OBJECT:
-         return new (trStackMemory()) KnownObjOperand(prexArgument->getKnownObjectIndex(), prexArgument->getClass());
+         return knownObjOperand(prexArgument->getKnownObjectIndex(), prexArgument->getClass());
       case FIXED_CLASS:
          return new (trStackMemory()) FixedClassOperand(prexArgument->getClass());
       case PREEXISTENT:
@@ -1983,7 +1986,7 @@ InterpreterEmulator::createPrexArgFromOperand(Operand* operand)
       {
       auto koi = operand->getKnownObjectIndex();
       auto knot = comp()->getOrCreateKnownObjectTable();
-      if (knot && !knot->isNull(koi))
+      if (knot)
          return new (comp()->trHeapMemory()) TR_PrexArgument(operand->getKnownObjectIndex(), comp());
       }
    else if (operand->asObjectOperand() && operand->asObjectOperand()->getClass())
@@ -2066,6 +2069,8 @@ InterpreterEmulator::computePrexInfo(
          comp()->fej9()->isLambdaFormGeneratedMethod(callsite->_initialCalleeMethod),
          "appendix with non-LambdaForm method - expected a call site adapter");
 
+      // Since the appendix is described not by an Operand but only by a known
+      // object index, the null index can occur here.
       TR::KnownObjectTable *knot = comp()->getKnownObjectTable();
       if (!knot->isNull(appendix))
          {
