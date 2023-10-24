@@ -78,9 +78,10 @@ class Operand
    public:
       TR_ALLOC(TR_Memory::EstimateCodeSize);
 
-      enum KnowledgeLevel { NONE, OBJECT, MUTABLE_CALLSITE_TARGET, PREEXISTENT, FIXED_CLASS, KNOWN_OBJECT, ICONST };
+      enum KnowledgeLevel { NONE, OBJECT, MUTABLE_CALLSITE_TARGET, PREEXISTENT, FIXED_CLASS, KNOWN_OBJECT, ICONST, NULLREF };
       static const char* KnowledgeStrings[];
 
+      virtual bool isNull(){ return false;}
       virtual IconstOperand* asIconst(){ return NULL;}
       virtual KnownObjOperand *asKnownObject(){ return NULL;}
       virtual FixedClassOperand *asFixedClassOperand(){ return NULL;}
@@ -92,6 +93,18 @@ class Operand
       virtual void printToString(TR::StringBuf *buf);
       virtual KnowledgeLevel getKnowledgeLevel() { return NONE; }
       Operand* merge(Operand* other);
+      virtual Operand* merge1(Operand* other);
+   };
+
+class NullOperand : public Operand
+   {
+   public:
+      TR_ALLOC(TR_Memory::EstimateCodeSize);
+      NullOperand() { }
+      virtual bool isNull() { return true; }
+      virtual void printToString(TR::StringBuf *buf);
+
+      virtual KnowledgeLevel getKnowledgeLevel() { return NULLREF; }
       virtual Operand* merge1(Operand* other);
    };
 
@@ -172,11 +185,8 @@ class KnownObjOperand : public FixedClassOperand
    {
    public:
       TR_ALLOC(TR_Memory::EstimateCodeSize);
-      KnownObjOperand(TR::KnownObjectTable::Index koi, TR_OpaqueClassBlock* clazz = NULL);
+      KnownObjOperand(TR::KnownObjectTable *knot, TR::KnownObjectTable::Index koi, TR_OpaqueClassBlock *clazz);
       virtual KnownObjOperand *asKnownObject(){ return this;}
-      virtual FixedClassOperand *asFixedClassOperand();
-      virtual ObjectOperand *asObjectOperand();
-      virtual TR_OpaqueClassBlock* getClass();
       virtual TR::KnownObjectTable::Index getKnownObjectIndex(){ return knownObjIndex;}
       virtual KnowledgeLevel getKnowledgeLevel() { return KNOWN_OBJECT; }
       virtual Operand* merge1(Operand* other);
@@ -363,6 +373,7 @@ class InterpreterEmulator : public TR_ByteCodeIteratorWithState<TR_J9ByteCode, J
       Operand *getReturnValue(TR_ResolvedMethod *callee);
       void dumpStack();
       void pushUnknownOperand() { Base::push(_unknownOperand); }
+      Operand *knownObjOperand(TR::KnownObjectTable::Index i, TR_OpaqueClassBlock *clazz = NULL);
       // doesn't need to handle execeptions yet as they don't exist in method handle thunk archetypes
       virtual void findAndMarkExceptionRanges(){ }
       /*
@@ -445,6 +456,7 @@ class InterpreterEmulator : public TR_ByteCodeIteratorWithState<TR_J9ByteCode, J
       TR_LogTracer *_tracer;
       TR_EstimateCodeSize *_ecs;
       Operand * _unknownOperand; // used whenever the iterator can't reason about an operand
+      NullOperand *_nullOperand; // represents a null reference - no need for multiple instances
       TR_CallTarget *_calltarget; // the target method to inline
       bool _iteratorWithState;
       flags8_t * _InterpreterEmulatorFlags; // flags with bits to indicate property of each bytecode.
