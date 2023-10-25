@@ -314,6 +314,9 @@ class InterpreterEmulator : public TR_ByteCodeIteratorWithState<TR_J9ByteCode, J
        * Initialize the data structures needed for iterator with state
        */
       void initializeIteratorWithState();
+
+      void assertHasState();
+
       /*
        * push and pop operands on stack according to given bytecode
        *
