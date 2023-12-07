@@ -5661,13 +5661,6 @@ TR_ResolvedJ9Method::virtualMethodIsOverridden()
    return (UDATA)ramMethod()->constantPool & J9_STARTPC_METHOD_IS_OVERRIDDEN ? true : false;
    }
 
-void
-TR_ResolvedJ9Method::setVirtualMethodIsOverridden()
-   {
-   UDATA *cp = (UDATA*)&(ramMethod()->constantPool);
-   *cp |= J9_STARTPC_METHOD_IS_OVERRIDDEN;
-   }
-
 void *
 TR_ResolvedJ9Method::addressContainingIsOverriddenBit()
    {

@@ -210,7 +210,6 @@ public:
    virtual bool isSameMethod(TR_ResolvedMethod *) override;
    virtual bool isInlineable(TR::Compilation *) override;
    virtual void setWarmCallGraphTooBig(uint32_t, TR::Compilation *) override;
-   virtual void setVirtualMethodIsOverridden() override;
    virtual void * addressContainingIsOverriddenBit() override { return _addressContainingIsOverriddenBit; }
    virtual bool methodIsNotzAAPEligible() override;
    virtual void setClassForNewInstance(J9Class *c) override;

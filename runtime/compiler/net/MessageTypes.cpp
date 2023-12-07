@@ -71,7 +71,6 @@ const char *messageNames[] =
    "ResolvedMethod_isSameMethod",
    "ResolvedMethod_isInlineable",
    "ResolvedMethod_setWarmCallGraphTooBig",
-   "ResolvedMethod_setVirtualMethodIsOverridden",
    "ResolvedMethod_methodIsNotzAAPEligible",
    "ResolvedMethod_setClassForNewInstance",
    "ResolvedMethod_getResolvedImproperInterfaceMethodAndMirror",

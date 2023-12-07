@@ -831,7 +831,7 @@ setCallSiteTargetImpl(J9VMThread *currentThread, jobject callsite, jobject targe
 		&& (NULL != mcsClass)
 		&& VM_VMHelpers::inlineCheckCast(clazz, mcsClass)
 		) {
-			jitConfig->jitSetMutableCallSiteTarget(currentThread, callsiteObject, targetObject);
+			jitConfig->jitSetMutableCallSiteTarget(currentThread, callsite, target);
 		} else {
 			/* There are no runtime assumptions to invalidate (either because
 			 * the call site is not a MutableCallSite, or because the JIT

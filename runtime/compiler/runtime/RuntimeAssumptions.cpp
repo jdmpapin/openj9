@@ -83,6 +83,13 @@ TR_PatchNOPedGuardSiteOnClassPreInitialize::hashCode(char *sig, uint32_t sigLen)
    return sum;
    }
 
+bool jdmpHackStwAssumptions()
+   {
+   static const bool enable =
+      feGetEnv("TR_jdmpHackStwAssumptions") != NULL;
+   return enable;
+   };
+
 void
 TR_PatchNOPedGuardSiteOnClassPreInitialize::reclaim()
    {
@@ -242,6 +249,9 @@ TR_PersistentCHTable::classGotExtended(
       TR_OpaqueClassBlock *subClassId)
    {
    TR_ASSERT_FATAL(isAccessible(), "Should not be called if table is not accessible!");
+
+   reinterpret_cast<J9Class*>(superClassId)->classDepthAndFlags |= J9AccClassHasBeenOverridden;
+
    TR_PersistentClassInfo * cl = findClassInfo(superClassId);
    TR_PersistentClassInfo * subClass = findClassInfo(subClassId); // This is actually the class that got loaded extending the superclass
 #if defined(J9VM_OPT_JITSERVER)
@@ -280,7 +290,32 @@ TR_PersistentCHTable::classGotExtended(
       cl->clearShouldNotBeNewlyExtended(); // flags are not needed anymore
       }
 
+   J9VMThread *vmThread = static_cast<TR_J9VM*>(fe)->vmThread();
+   bool retryWithSafePointVMAccess = false;
+   do
       {
+      if (retryWithSafePointVMAccess)
+         {
+         // To avoid deadlock, safe-point VM access should be acquired before
+         // the CH table mutex, so release and reacquire. We must not own the
+         // VM's class table mutex. If we did own that, we could be in the
+         // class load hook, and releasing it could allow other threads to see
+         // the class before the class load hook finishes.
+         TR_ASSERT_FATAL(
+            !TR::MonitorTable::currentThreadOwnsVMClassTableMutex(),
+            "must not own VM class table mutex");
+
+         TR::MonitorTable::releaseCHTableMutex();
+         vmThread->javaVM->internalVMFunctions->acquireSafePointVMAccess(vmThread);
+         TR::MonitorTable::acquireCHTableMutex();
+         retryWithSafePointVMAccess = false;
+         }
+
+      // NOTE: It's important to hold the CH table mutex across this inner loop
+      // to ensure that it doesn't run after a compilation's commit sees that
+      // an assumption is valid but before the assumption is added to the RAT.
+      bool canCompensate = vmThread->safePointCount != 0 || !jdmpHackStwAssumptions();
+
       OMR::CriticalSection classGotExtended(assumptionTableMutex);
       OMR::RuntimeAssumption ** headPtr = table->getBucketPtr(RuntimeAssumptionOnClassExtend,
                                          TR_RuntimeAssumptionTable::hashCode((uintptr_t) superClassId));
@@ -288,11 +323,22 @@ TR_PersistentCHTable::classGotExtended(
          {
          if (cursor->matches((uintptr_t) superClassId))
             {
-            cursor->compensate(fe, 0, 0);
-            removeAssumptionFromRAT(cursor);
+            if (canCompensate)
+               {
+               cursor->compensate(fe, 0, 0);
+               removeAssumptionFromRAT(cursor);
+               }
+            else
+               {
+               retryWithSafePointVMAccess = true;
+               break;
+               }
             }
          }
+
+      // assumptionTableMutex is released here
       }
+   while (retryWithSafePointVMAccess);
 
    return true;
    }
@@ -403,18 +449,62 @@ TR_PersistentCHTable::methodGotOverridden(
       TR_OpaqueMethodBlock *overriddenMethod,
       int32_t smpFlag)
    {
-   OMR::CriticalSection methodGotOverridden(assumptionTableMutex);
-   TR_RuntimeAssumptionTable *table = persistentMemory->getPersistentInfo()->getRuntimeAssumptionTable();
-   OMR::RuntimeAssumption ** headPtr = table->getBucketPtr(RuntimeAssumptionOnMethodOverride,
-                                        TR_RuntimeAssumptionTable::hashCode((uintptr_t)overriddenMethod));
-   for (OMR::RuntimeAssumption *cursor = *headPtr; cursor; cursor = cursor->getNext())
+   J9VMThread *vmThread = static_cast<TR_J9VM*>(fe)->vmThread();
+   J9JavaVM *vm = vmThread->javaVM;
+   vm->internalVMFunctions->atomicOrIntoConstantPool(
+      vm,
+      reinterpret_cast<J9Method*>(overriddenMethod),
+      J9_STARTPC_METHOD_IS_OVERRIDDEN);
+
+   bool retryWithSafePointVMAccess = false;
+   do
       {
-      if (cursor->matches((uintptr_t) overriddenMethod))
+      if (retryWithSafePointVMAccess)
          {
-         cursor->compensate(fe, 0, 0);
-         removeAssumptionFromRAT(cursor);
+         // To avoid deadlock, safe-point VM access should be acquired before
+         // the CH table mutex, so release and reacquire. We must not own the
+         // VM's class table mutex. If we did own that, we could be in the
+         // class load hook, and releasing it could allow other threads to see
+         // the class before the class load hook finishes.
+         TR_ASSERT_FATAL(
+            !TR::MonitorTable::currentThreadOwnsVMClassTableMutex(),
+            "must not own VM class table mutex");
+
+         TR::MonitorTable::releaseCHTableMutex();
+         vmThread->javaVM->internalVMFunctions->acquireSafePointVMAccess(vmThread);
+         TR::MonitorTable::acquireCHTableMutex();
+         retryWithSafePointVMAccess = false;
          }
+
+      // NOTE: It's important to hold the CH table mutex across this inner loop
+      // to ensure that it doesn't run after a compilation's commit sees that
+      // an assumption is valid but before the assumption is added to the RAT.
+      bool canCompensate = vmThread->safePointCount != 0 || !jdmpHackStwAssumptions();
+
+      OMR::CriticalSection methodGotOverridden(assumptionTableMutex);
+      TR_RuntimeAssumptionTable *table = persistentMemory->getPersistentInfo()->getRuntimeAssumptionTable();
+      OMR::RuntimeAssumption ** headPtr = table->getBucketPtr(RuntimeAssumptionOnMethodOverride,
+                                           TR_RuntimeAssumptionTable::hashCode((uintptr_t)overriddenMethod));
+      for (OMR::RuntimeAssumption *cursor = *headPtr; cursor; cursor = cursor->getNext())
+         {
+         if (cursor->matches((uintptr_t) overriddenMethod))
+            {
+            if (canCompensate)
+               {
+               cursor->compensate(fe, 0, 0);
+               removeAssumptionFromRAT(cursor);
+               }
+            else
+               {
+               retryWithSafePointVMAccess = true;
+               break;
+               }
+            }
+         }
+
+      // assumptionTableMutex is released here
       }
+   while (retryWithSafePointVMAccess);
    }
 
 
@@ -433,6 +523,8 @@ TR_PersistentCHTable::classGotRedefined(
    // 1. Conservatively pretend the old class got extended
    //
 
+   J9VMThread *vmThread = static_cast<TR_J9VM*>(fe)->vmThread();
+   TR_ASSERT_FATAL(vmThread->safePointCount != 0, "classGotRedefined: should already have safe-point VM access");
    TR_RuntimeAssumptionTable *table = _trPersistentMemory->getPersistentInfo()->getRuntimeAssumptionTable();
    OMR::RuntimeAssumption **headPtr = table->getBucketPtr(RuntimeAssumptionOnClassExtend,
                                       TR_RuntimeAssumptionTable::hashCode((uintptr_t) oldClassId));
