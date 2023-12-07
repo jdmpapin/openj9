@@ -164,6 +164,29 @@ extern TR::Monitor *assumptionTableMutex;
 
 extern volatile bool shutdownSamplerThread;
 
+extern bool jdmpHackStwAssumptions();
+
+/**
+ * \brief Release safe-point VM access if it was acquired during compensation.
+ * \param vmThread the current thread
+ * \param origSafePointCount the value of vmThread->safePointCount before any
+ *                           assumptions were compensated.
+ */
+static void releaseSafePointVMAccessAfterCompensation(
+   J9VMThread *vmThread, uintptr_t origSafePointCount)
+   {
+   if (vmThread->safePointCount == origSafePointCount)
+      return; // did not newly acquire safe-point VM access
+
+   TR_ASSERT_FATAL(jdmpHackStwAssumptions(), "not enabled! why did we take safe-point VM access?");
+
+   // We should have acquired safe-point VM access only if we didn't already
+   // hold it, and we should have acquired it only once.
+   TR_ASSERT_FATAL(origSafePointCount == 0, "unexpected redundant acquisition of safe-point VM access");
+   TR_ASSERT_FATAL(vmThread->safePointCount == 1, "unexpected multiple acquisition of safe-point VM access");
+   vmThread->javaVM->internalVMFunctions->releaseSafePointVMAccess(vmThread);
+   }
+
 #if defined(AOTRT_DLL)
 #if defined(J9VM_GC_DYNAMIC_CLASS_UNLOADING)
 extern void rtHookClassUnload(J9HookInterface * *, UDATA , void *, void *);
@@ -2733,7 +2756,9 @@ void jitClassesRedefined(J9VMThread * currentThread, UDATA classCount, J9JITRede
          if (table)
             {
             reportHookDetail(currentThread, "jitClassesRedefined", "    Notify CHTable on method old=%p fresh=%p", oldMethod, freshMethod);
+            TR::MonitorTable::acquireCHTableMutex();
             table->methodGotOverridden(fe, compInfo->persistentMemory(), (TR_OpaqueMethodBlock*)freshMethod, (TR_OpaqueMethodBlock*)oldMethod, isSMP);
+            TR::MonitorTable::releaseCHTableMutex();
             }
          // Step 4 patch modified J9Method
          if (oldMethod && newMethod && rat)
@@ -2885,7 +2910,7 @@ void jitIllegalFinalFieldModification(J9VMThread *currentThread, J9Class *fieldC
 
 #if defined(J9VM_OPT_OPENJDK_METHODHANDLE)
 // JIT hook called by the VM to update the target of a MutableCallSite.
-void jitSetMutableCallSiteTarget(J9VMThread *vmThread, j9object_t mcs, j9object_t newTarget)
+void jitSetMutableCallSiteTarget(J9VMThread *vmThread, j9object_t mcsRef, j9object_t newTargetRef)
    {
    J9JITConfig *jitConfig = vmThread->javaVM->jitConfig;
    TR::CompilationInfo *compInfo = TR::CompilationInfo::get(jitConfig);
@@ -2895,6 +2920,9 @@ void jitSetMutableCallSiteTarget(J9VMThread *vmThread, j9object_t mcs, j9object_
    bool verbose = TR::Options::getCmdLineOptions()->getVerboseOption(TR_VerboseHooks);
    bool details = TR::Options::getCmdLineOptions()->getVerboseOption(TR_VerboseHookDetails);
    verbose = verbose || details;
+
+   j9object_t mcs = J9_JNI_UNWRAP_REFERENCE(mcsRef);
+   j9object_t newTarget = J9_JNI_UNWRAP_REFERENCE(newTargetRef);
 
    TR_OpaqueClassBlock *mcsClass = fej9->getObjectClass((uintptr_t)mcs);
    uintptr_t targetOffset = fej9->getInstanceFieldOffset(
@@ -2910,6 +2938,31 @@ void jitSetMutableCallSiteTarget(J9VMThread *vmThread, j9object_t mcs, j9object_
       // Nothing to do.
       TR::MonitorTable::releaseCHTableMutex();
       return;
+      }
+
+   // To avoid deadlock, safe-point VM access must be acquired before the class
+   // table mutex. However, the class table mutex must be held across all of
+   // the following logic, so it won't be possible to acquire safe-point VM
+   // access opportunistically. Acquire both now.
+   if (jdmpHackStwAssumptions())
+      {
+      TR::MonitorTable::releaseCHTableMutex();
+      vmThread->javaVM->internalVMFunctions->acquireSafePointVMAccess(vmThread);
+      TR::MonitorTable::acquireCHTableMutex();
+
+      // Objects may have moved.
+      mcs = J9_JNI_UNWRAP_REFERENCE(mcsRef);
+      newTarget = J9_JNI_UNWRAP_REFERENCE(newTargetRef);
+
+      // Re-check just in case another thread has already set it to newTarget.
+      prevTarget = fej9->getReferenceFieldAt((uintptr_t)mcs, targetOffset);
+      if ((uintptr_t)newTarget == prevTarget)
+         {
+         // Nothing to do.
+         TR::MonitorTable::releaseCHTableMutex();
+         vmThread->javaVM->internalVMFunctions->releaseSafePointVMAccess(vmThread);
+         return;
+         }
       }
 
    // The CH table lock must be acquired before reading the cookie. Otherwise,
@@ -3006,6 +3059,8 @@ void jitSetMutableCallSiteTarget(J9VMThread *vmThread, j9object_t mcs, j9object_
       vmThread, mcs, targetOffset, newTarget, 0);
 
    TR::MonitorTable::releaseCHTableMutex();
+   if (jdmpHackStwAssumptions())
+      vmThread->javaVM->internalVMFunctions->releaseSafePointVMAccess(vmThread);
    }
 #endif
 
@@ -3032,16 +3087,14 @@ void jitUpdateMethodOverride(J9VMThread * vmThread, J9Class * cl, J9Method * ove
    bool isSMP = 1; // conservative
    if (!TR::Options::getCmdLineOptions()->getOption(TR_DisableCHOpts))
       {
-      TR::MonitorTable::acquireCHTableMutex();
       compInfo->getPersistentInfo()->getPersistentCHTable()->methodGotOverridden(
                                                                                  vm, compInfo->persistentMemory(), (TR_OpaqueMethodBlock *) overriddingMethod, (TR_OpaqueMethodBlock *) overriddenMethod, isSMP);
-      TR::MonitorTable::releaseCHTableMutex();
       }
    }
 
 /* updateOverriddenFlag() replaces jitUpdateInlineAttribute.  See Design 1812 */
 
-static void updateOverriddenFlag( J9VMThread *vm , J9Class *cl)
+static void updateOverriddenFlag(J9VMThread *vm , J9Class *cl)
    {
 
    static const char *traceIt = 0; //  feGetEnv("TR_TraceUpdateOverridenFlag"); //this trace should only be enabled if it is needed
@@ -3176,8 +3229,7 @@ static void updateOverriddenFlag( J9VMThread *vm , J9Class *cl)
 
          if (superMethod != subMethod)    // the j9methods don't match, so set the overridden bit
             {
-            jitUpdateMethodOverride(vm, cl, superMethod,subMethod);
-            vm->javaVM->internalVMFunctions->atomicOrIntoConstantPool(vm->javaVM, superMethod,J9_STARTPC_METHOD_IS_OVERRIDDEN);
+            jitUpdateMethodOverride(vm, cl, superMethod, subMethod);
 
             if (traceIt)
                {
@@ -3206,8 +3258,7 @@ static void updateOverriddenFlag( J9VMThread *vm , J9Class *cl)
                tempsuperVTable = tempsuperVTable + methodIndex;
                tempsuperMethod= *tempsuperVTable;
 
-               jitUpdateMethodOverride(vm, cl, tempsuperMethod,subMethod);
-               vm->javaVM->internalVMFunctions->atomicOrIntoConstantPool(vm->javaVM, tempsuperMethod,J9_STARTPC_METHOD_IS_OVERRIDDEN);
+               jitUpdateMethodOverride(vm, cl, tempsuperMethod, subMethod);
                }
 
             }
@@ -3280,7 +3331,6 @@ static bool updateCHTable(J9VMThread * vmThread, J9Class  * cl)
    if (classDepth >= 0 && !updateFailed)
       {
       J9Class * superCl = cl->superclasses[classDepth];
-      superCl->classDepthAndFlags |= J9AccClassHasBeenOverridden;
 
       TR_OpaqueClassBlock *superClazz = ((TR_J9VMBase *)vm)->convertClassPtrToClassOffset(superCl);
       if (p)
@@ -3298,7 +3348,6 @@ static bool updateCHTable(J9VMThread * vmThread, J9Class  * cl)
          superCl = iTableEntry->interfaceClass;
          if (superCl != cl)
             {
-            superCl->classDepthAndFlags |= J9AccClassHasBeenOverridden;
             superClazz = ((TR_J9VMBase *)vm)->convertClassPtrToClassOffset(superCl);
             if (p)
                {
@@ -3869,6 +3918,7 @@ void jitHookClassLoadHelper(J9VMThread *vmThread,
                             TR::CompilationInfo *compInfo,
                             UDATA *classLoadEventFailed)
    {
+   uintptr_t origSafePointCount = vmThread->safePointCount;
    bool allocFailed = false;
    TR_J9VMBase *vm = TR_J9VMBase::get(jitConfig, vmThread);
    TR_OpaqueClassBlock *clazz = TR::Compiler->cls.convertClassPtrToClassOffset(cl);
@@ -3897,11 +3947,10 @@ void jitHookClassLoadHelper(J9VMThread *vmThread,
          }
       }
 
-   // todo: why is the override bit on already....temporarily reset it
-   // ALI 20031015: I think I have fixed the above todo - we should never
-   // get an inconsistent state now.  The following should be unnecessary -
-   // verify and remove  FIXME
-   cl->classDepthAndFlags &= ~J9AccClassHasBeenOverridden;
+   TR_ASSERT_FATAL(
+      (cl->classDepthAndFlags & J9AccClassHasBeenOverridden) == 0,
+      "class %p should not be extended yet",
+      cl);
 
    // For regular classes, cl->classLoader points to the correct class loader by the time we enter this hook.
    // For anonymous classes however, it points to the anonymous class loader and not the correct class loader.
@@ -3984,6 +4033,7 @@ void jitHookClassLoadHelper(J9VMThread *vmThread,
    checkForLockReservation(vmThread, jitConfig, classLoader, clazz, vm, compInfo, className, classNameLen);
 
    TR::MonitorTable::releaseCHTableMutex();
+   releaseSafePointVMAccessAfterCompensation(vmThread, origSafePointCount);
    }
 
 static void jitHookClassLoad(J9HookInterface * * hookInterface, UDATA eventNum, void * eventData, void * userData)
@@ -4106,7 +4156,9 @@ static void jitHookClassPreinitialize(J9HookInterface * * hookInterface, UDATA e
    if (cht && !cht->isActive())
       return;
 
+   uintptr_t origSafePointCount = vmThread->safePointCount;
    jitHookClassPreinitializeHelper(vmThread, jitConfig, cl, &(classPreinitializeEvent->failed));
+   releaseSafePointVMAccessAfterCompensation(vmThread, origSafePointCount);
    }
 
 static void jitHookClassInitialize(J9HookInterface * * hookInterface, UDATA eventNum, void * eventData, void * userData)

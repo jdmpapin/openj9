@@ -113,7 +113,7 @@ extern "C" void *jitLookupDLT(J9VMThread *currentThread, J9Method *method, UDATA
 #endif
 
 #if defined(J9VM_OPT_OPENJDK_METHODHANDLE)
-extern "C" void jitSetMutableCallSiteTarget(J9VMThread *vmThread, j9object_t mcs, j9object_t newTarget);
+extern "C" void jitSetMutableCallSiteTarget(J9VMThread *vmThread, jobject mcs, jobject newTarget);
 #endif
 
 }

@@ -485,7 +485,6 @@ protected:
 
 public:
    virtual bool                    virtualMethodIsOverridden();
-   virtual void                    setVirtualMethodIsOverridden();
    virtual void *                  addressContainingIsOverriddenBit();
    virtual int32_t                 virtualCallSelector();
 

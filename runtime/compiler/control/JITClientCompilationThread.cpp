@@ -1832,13 +1832,6 @@ handleServerMessage(JITServer::ClientStream *client, TR_J9VM *fe, JITServer::Mes
          client->write(response, JITServer::Void());
          }
          break;
-      case MessageType::ResolvedMethod_setVirtualMethodIsOverridden:
-         {
-         TR_ResolvedJ9Method *mirror = std::get<0>(client->getRecvData<TR_ResolvedJ9Method *>());
-         mirror->setVirtualMethodIsOverridden();
-         client->write(response, JITServer::Void());
-         }
-         break;
       case MessageType::ResolvedMethod_methodIsNotzAAPEligible:
          {
          TR_ResolvedJ9Method *mirror = std::get<0>(client->getRecvData<TR_ResolvedJ9Method *>());

@@ -1374,13 +1374,6 @@ TR_ResolvedJ9JITServerMethod::setWarmCallGraphTooBig(uint32_t bcIndex, TR::Compi
    _stream->read<JITServer::Void>();
    }
 
-void
-TR_ResolvedJ9JITServerMethod::setVirtualMethodIsOverridden()
-   {
-   _stream->write(JITServer::MessageType::ResolvedMethod_setVirtualMethodIsOverridden, _remoteMirror);
-   _stream->read<JITServer::Void>();
-   }
-
 bool
 TR_ResolvedJ9JITServerMethod::methodIsNotzAAPEligible()
    {

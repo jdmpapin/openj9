@@ -843,6 +843,7 @@ TR_PersistentCHTable::addClassToTable(J9VMThread *vmThread,
 bool
 TR_PersistentCHTable::activate(J9VMThread *vmThread, TR_J9VMBase *fej9, TR::CompilationInfo *compInfo)
    {
+   // TODO: expect safe-point VM access instead of exclusive access here
    TR_ASSERT_FATAL(!isAccessible(), "CH table is already accessible!");
 
    TR::ClassTableCriticalSection activateTable(fej9);

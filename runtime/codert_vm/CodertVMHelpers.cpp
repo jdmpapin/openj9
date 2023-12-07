@@ -309,8 +309,6 @@ jitUpdateInlineAttribute(J9VMThread *currentThread, J9Class * classPtr, void *ji
 					if (NULL != jitCallBack) {
 						((overrideCallback)jitCallBack)(currentThread, 0, superMethod, subMethod);
 					}
-					/* Mark the super method as overridden */
-					VM_AtomicSupport::bitOr((UDATA*)superMethod->constantPool, J9_STARTPC_METHOD_IS_OVERRIDDEN);
 				}
 				superMethods += 1;
 				subMethods += 1;
