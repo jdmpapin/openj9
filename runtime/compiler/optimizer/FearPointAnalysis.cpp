@@ -78,6 +78,12 @@ void TR_FearPointAnalysis::analyzeTreeTopsInBlockStructure(TR_BlockStructure *bl
    {
    }
 
+bool jdmpNoFearPointAnalysis()
+   {
+   static const bool enable = feGetEnv("TR_jdmpNoFearPointAnalysis") != NULL;
+   return enable;
+   }
+
 /**
  * Conduct fear analysis for an set of fear generating nodes, provided
  * as a bit vector of their global indices.
@@ -99,6 +105,8 @@ TR_FearPointAnalysis::TR_FearPointAnalysis(
    _topLevelFearOnly(topLevelFearOnly),
    _trace(trace)
    {
+   if (jdmpNoFearPointAnalysis())
+      return;
 
    if (comp->getVisitCount() > 8000)
       comp->resetVisitCounts(1);

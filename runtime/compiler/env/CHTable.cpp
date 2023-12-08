@@ -57,6 +57,13 @@
 #endif /* defined(J9VM_OPT_JITSERVER) */
 #include "ras/Logger.hpp"
 
+bool
+jdmpHackGuardsEnabled()
+   {
+   static const bool enable = feGetEnv("TR_jdmpHackGuards") != NULL;
+   return enable;
+   }
+
 void
 TR_PreXRecompile::dumpInfo()
    {
@@ -101,10 +108,36 @@ TR_PatchNOPedGuardSiteOnClassExtend *TR_PatchNOPedGuardSiteOnClassExtend::make(
    return result;
    }
 
+TR_PatchMultipleNOPedGuardSitesOnClassExtend *
+TR_PatchMultipleNOPedGuardSitesOnClassExtend::make(
+   TR_FrontEnd *fe,
+   TR_PersistentMemory *pm,
+   TR_OpaqueClassBlock *clazz,
+   TR::PatchSites *sites,
+   OMR::RuntimeAssumption **sentinel)
+   {
+   auto *result = new (pm) TR_PatchMultipleNOPedGuardSitesOnClassExtend(pm, clazz, sites);
+   result->addToRAT(pm, RuntimeAssumptionOnClassExtend, fe, sentinel);
+   return result;
+   }
+
 TR_PatchNOPedGuardSiteOnMethodOverride *TR_PatchNOPedGuardSiteOnMethodOverride::make(
    TR_FrontEnd *fe, TR_PersistentMemory *pm, TR_OpaqueMethodBlock *method, uint8_t *loc, uint8_t *dest, OMR::RuntimeAssumption **sentinel)
    {
    TR_PatchNOPedGuardSiteOnMethodOverride *result = new (pm) TR_PatchNOPedGuardSiteOnMethodOverride(pm, method, loc, dest);
+   result->addToRAT(pm, RuntimeAssumptionOnMethodOverride, fe, sentinel);
+   return result;
+   }
+
+TR_PatchMultipleNOPedGuardSitesOnMethodOverride *
+TR_PatchMultipleNOPedGuardSitesOnMethodOverride::make(
+   TR_FrontEnd *fe,
+   TR_PersistentMemory *pm,
+   TR_OpaqueMethodBlock *method,
+   TR::PatchSites *sites,
+   OMR::RuntimeAssumption **sentinel)
+   {
+   auto *result = new (pm) TR_PatchMultipleNOPedGuardSitesOnMethodOverride(pm, method, sites);
    result->addToRAT(pm, RuntimeAssumptionOnMethodOverride, fe, sentinel);
    return result;
    }
@@ -179,6 +212,15 @@ TR_PatchNOPedGuardSiteOnMutableCallSiteChange *TR_PatchNOPedGuardSiteOnMutableCa
       TR_FrontEnd *fe, TR_PersistentMemory *pm, uintptr_t key, uint8_t *location, uint8_t *destination, OMR::RuntimeAssumption **sentinel)
    {
    TR_PatchNOPedGuardSiteOnMutableCallSiteChange *result = new (pm) TR_PatchNOPedGuardSiteOnMutableCallSiteChange(pm, key, location, destination);
+   result->addToRAT(pm, RuntimeAssumptionOnMutableCallSiteChange, fe, sentinel);
+   return result;
+   }
+
+TR_PatchMultipleNOPedGuardSitesOnMutableCallSiteChange *
+TR_PatchMultipleNOPedGuardSitesOnMutableCallSiteChange::make(
+   TR_FrontEnd *fe, TR_PersistentMemory *pm, uintptr_t key, TR::PatchSites *sites, OMR::RuntimeAssumption **sentinel)
+   {
+   TR_PatchMultipleNOPedGuardSitesOnMutableCallSiteChange *result = new (pm) TR_PatchMultipleNOPedGuardSitesOnMutableCallSiteChange(pm, key, sites);
    result->addToRAT(pm, RuntimeAssumptionOnMutableCallSiteChange, fe, sentinel);
    return result;
    }
@@ -436,7 +478,10 @@ bool TR_CHTable::commit(TR::Compilation *comp)
       {
       static bool dontGroupOSRAssumptions = (feGetEnv("TR_DontGroupOSRAssumptions") != NULL);
       if (!dontGroupOSRAssumptions)
-         commitOSRVirtualGuards(comp, vguards);
+         {
+         if (!commitOSRVirtualGuards(comp, vguards, table))
+            return false;
+         }
 
       for (auto info = vguards.begin(); info != vguards.end(); ++info)
          {
@@ -446,13 +491,17 @@ bool TR_CHTable::commit(TR::Compilation *comp)
 
          // Commit the virtual guard itself
          //
-         commitVirtualGuard(*info, sites, table, comp);
+         if (!commitVirtualGuard(*info, sites, table, comp))
+            return false;
 
          // Commit any inner guards that are assuming on this guard
          //
          ListIterator<TR_InnerAssumption> it(&((*info)->getInnerAssumptions()));
          for (TR_InnerAssumption *inner = it.getFirst(); inner; inner = it.getNext())
-            commitVirtualGuard(inner->_guard, sites, table, comp);
+            {
+            if (!commitVirtualGuard(inner->_guard, sites, table, comp))
+               return false;
+            }
          }
       }
 
@@ -462,9 +511,341 @@ bool TR_CHTable::commit(TR::Compilation *comp)
    return true;
    }
 
-void
+namespace {
+
+class OSRAssumptionFactory
+   {
+   protected:
+   OSRAssumptionFactory(TR::Compilation *comp, TR_PersistentCHTable *table);
+
+   public:
+   virtual bool commitOSRAssumptions();
+
+   protected:
+   virtual void makeClassRedefAssumption(TR_OpaqueClassBlock *clazz) = 0;
+   virtual void makeStaticFinalFieldModificationAssumption(TR_OpaqueClassBlock *clazz) = 0;
+   virtual void makeClassExtendAssumption(TR_OpaqueClassBlock *clazz) = 0;
+   virtual void makeMethodOverrideAssumption(TR_OpaqueMethodBlock *method) = 0;
+   virtual void makeMutableCallSiteTargetAssumption(uintptr_t cookie) = 0;
+
+   TR::Compilation * const _comp;
+   TR_PersistentCHTable * const _table;
+   TR_FrontEnd * const _fe;
+   TR_PersistentMemory * const _pmem;
+   OMR::RuntimeAssumption ** const _sentinel;
+
+   TR_Array<TR_OpaqueClassBlock*> * const _classesForOSRRedefinition;
+   TR_Array<TR_OpaqueClassBlock*> * const _classesForStaticFinalFieldModification;
+   const TR::Compilation::ClassSet &_classesForOSROnExtend;
+   const TR::Compilation::ResolvedMethodSet &_methodsForOSROnOverride;
+   const TR::Compilation::HierarchyAssumptionSet &_methodsForOSROnHierarchyOverride;
+   const TR::Compilation::MutableCallSiteAssumptionSet &_mutableCallSitesForOSR;
+   };
+
+OSRAssumptionFactory::OSRAssumptionFactory(
+   TR::Compilation *comp, TR_PersistentCHTable *table)
+   : _comp(comp)
+   , _table(table)
+   , _fe(comp->fe())
+   , _pmem(comp->trPersistentMemory())
+   , _sentinel(comp->getMetadataAssumptionList())
+   , _classesForOSRRedefinition(comp->getClassesForOSRRedefinition())
+   , _classesForStaticFinalFieldModification(
+        comp->getClassesForStaticFinalFieldModification())
+   , _classesForOSROnExtend(comp->getClassesForOSROnExtend())
+   , _methodsForOSROnOverride(comp->getMethodsForOSROnOverride())
+   , _methodsForOSROnHierarchyOverride(comp->getMethodsForOSROnHierarchyOverride())
+   , _mutableCallSitesForOSR(comp->getMutableCallSitesForOSR())
+   {}
+
+static bool dontInvalidateMCSTargetGuards()
+   {
+   static const bool dontInvalidate =
+      feGetEnv("TR_dontInvalidateMCSTargetGuards") != NULL;
+
+   return dontInvalidate;
+   }
+
+// Update the MCS cookie if needed and determine whether the assumption still
+// holds, i.e. whether the target is still the one that was observed during
+// compilation. If the assumption holds, return the cookie, and the caller must
+// register a runtime assumption in the RAT. Otherwise, return zero, and the
+// caller must compensate as appropriate.
+static uintptr_t mcsTargetAssumptionCookie(
+   TR::Compilation *comp,
+   TR::KnownObjectTable::Index mcs,
+   TR::KnownObjectTable::Index epoch)
+   {
+#if defined(J9VM_OPT_JITSERVER)
+   // JITServer KOT: At the moment this method is called only by TR_CHTable::commit().
+   // TR_CHTable::commit() already checks comp->isOutOfProcessCompilation().
+   // Adding the following check as a precaution in case commitVirtualGuard() is called
+   // outside TR_CHTable::commit() in the future.
+   TR_ASSERT(!comp->isOutOfProcessCompilation(), "TR_CHTable::commitVirtualGuard() should not be called at the server\n");
+#endif /* defined(J9VM_OPT_JITSERVER) */
+   TR::KnownObjectTable *knot = comp->getKnownObjectTable();
+   TR_ASSERT_FATAL(knot, "MutableCallSiteTargetGuard requires the Known Object Table");
+   uintptr_t *mcsReferenceLocation = knot->getPointerLocation(mcs);
+   void *cookiePointer = comp->trPersistentMemory()->allocatePersistentMemory(1);
+   uintptr_t potentialCookie = (uintptr_t)cookiePointer;
+   uintptr_t cookie = 0;
+
+   TR::KnownObjectTable::Index currentIndex = TR::KnownObjectTable::UNKNOWN;
+
+      {
+      TR_J9VMBase *fej9 = (TR_J9VMBase *)(comp->fe());
+      TR::VMAccessCriticalSection invalidateMCSTargetGuards(fej9);
+      currentIndex = fej9->mutableCallSiteEpoch(comp, mcs);
+      if (epoch == currentIndex)
+         cookie = fej9->mutableCallSiteCookie(*mcsReferenceLocation, potentialCookie);
+      }
+
+   if (cookie != potentialCookie)
+      {
+      comp->trPersistentMemory()->freePersistentMemory(cookiePointer);
+      }
+
+   if (cookie == 0)
+      {
+      logprintf(
+         comp->getOption(TR_TraceCG),
+         comp->log(),
+         "MutableCallSiteTargetGuard is already invalid.  Expected epoch: obj%d  Found: obj%d\n",
+         epoch,
+         currentIndex);
+      }
+
+   return cookie;
+   }
+
+bool OSRAssumptionFactory::commitOSRAssumptions()
+   {
+   for (int i = 0; i < _classesForOSRRedefinition->size(); ++i)
+      {
+      makeClassRedefAssumption((*_classesForOSRRedefinition)[i]);
+      _comp->setHasClassRedefinitionAssumptions();
+      }
+
+   for (int i = 0; i < _classesForStaticFinalFieldModification->size(); ++i)
+      makeStaticFinalFieldModificationAssumption((*_classesForStaticFinalFieldModification)[i]);
+
+   bool hackGuards = jdmpHackGuardsEnabled();
+
+   auto extEnd = _classesForOSROnExtend.end();
+   for (auto it = _classesForOSROnExtend.begin(); it != extEnd; it++)
+      {
+      TR_ASSERT_FATAL(hackGuards, "...");
+      TR_OpaqueClassBlock *clazz = *it;
+      if (_fe->classHasBeenExtended(clazz))
+         return false;
+
+      makeClassExtendAssumption(clazz);
+      _comp->setHasClassExtendAssumptions();
+      }
+
+   auto ovrEnd = _methodsForOSROnOverride.end();
+   for (auto it = _methodsForOSROnOverride.begin(); it != ovrEnd; it++)
+      {
+      TR_ASSERT_FATAL(hackGuards, "...");
+      TR_ResolvedMethod *resolvedMethod = *it;
+      if (resolvedMethod->virtualMethodIsOverridden())
+         return false;
+
+      makeMethodOverrideAssumption(resolvedMethod->getPersistentIdentifier());
+      _comp->setHasMethodOverrideAssumptions();
+      }
+
+   auto hierEnd = _methodsForOSROnHierarchyOverride.end();
+   for (auto it = _methodsForOSROnHierarchyOverride.begin(); it != hierEnd; it++)
+      {
+      TR_ASSERT_FATAL(hackGuards, "...");
+      TR_OpaqueClassBlock *clazz = it->_clazz;
+      TR::SymbolReference *symRef = it->_methodSymRef;
+      intptr_t offset = symRef->getOffset();
+      TR_ResolvedMethod *resolvedMethod =
+         symRef->getSymbol()->getResolvedMethodSymbol()->getResolvedMethod();
+
+      if (_table->isOverriddenInThisHierarchy(resolvedMethod, clazz, offset, _comp))
+         return false;
+
+      makeMethodOverrideAssumption(resolvedMethod->getPersistentIdentifier());
+      _comp->setHasMethodOverrideAssumptions();
+      }
+
+   if (!dontInvalidateMCSTargetGuards())
+      {
+      auto mcsEnd = _mutableCallSitesForOSR.end();
+      for (auto it = _mutableCallSitesForOSR.begin(); it != mcsEnd; it++)
+         {
+         TR_ASSERT_FATAL(hackGuards, "...");
+         uintptr_t cookie = mcsTargetAssumptionCookie(_comp, it->_mcs, it->_epoch);
+
+         if (cookie == 0)
+            return false;
+
+         makeMutableCallSiteTargetAssumption(cookie);
+         }
+      }
+
+   return true;
+   }
+
+class SingleSiteOSRAssumptionFactory : public OSRAssumptionFactory
+   {
+   public:
+   SingleSiteOSRAssumptionFactory(
+      TR::Compilation *comp, TR_PersistentCHTable *table, uint8_t *loc, uint8_t *dest)
+      : OSRAssumptionFactory(comp, table), _loc(loc), _dest(dest) {}
+
+   protected:
+   virtual void makeClassRedefAssumption(TR_OpaqueClassBlock *clazz);
+   virtual void makeStaticFinalFieldModificationAssumption(TR_OpaqueClassBlock *clazz);
+   virtual void makeClassExtendAssumption(TR_OpaqueClassBlock *clazz);
+   virtual void makeMethodOverrideAssumption(TR_OpaqueMethodBlock *method);
+   virtual void makeMutableCallSiteTargetAssumption(uintptr_t cookie);
+
+   private:
+   uint8_t * const _loc;
+   uint8_t * const _dest;
+   };
+
+void SingleSiteOSRAssumptionFactory::makeClassRedefAssumption(
+   TR_OpaqueClassBlock *clazz)
+   {
+   TR_PatchNOPedGuardSiteOnClassRedefinition::make(
+      _fe, _pmem, clazz, _loc, _dest, _sentinel);
+   }
+
+void SingleSiteOSRAssumptionFactory::makeStaticFinalFieldModificationAssumption(
+   TR_OpaqueClassBlock *clazz)
+   {
+   TR_PatchNOPedGuardSiteOnStaticFinalFieldModification::make(
+      _fe, _pmem, clazz, _loc, _dest, _sentinel);
+   }
+
+void SingleSiteOSRAssumptionFactory::makeClassExtendAssumption(
+   TR_OpaqueClassBlock *clazz)
+   {
+   TR_PatchNOPedGuardSiteOnClassExtend::make(
+      _fe, _pmem, clazz, _loc, _dest, _sentinel);
+   }
+
+void SingleSiteOSRAssumptionFactory::makeMethodOverrideAssumption(
+   TR_OpaqueMethodBlock *method)
+   {
+   TR_PatchNOPedGuardSiteOnMethodOverride::make(
+      _fe, _pmem, method, _loc, _dest, _sentinel);
+   }
+
+void SingleSiteOSRAssumptionFactory::makeMutableCallSiteTargetAssumption(
+   uintptr_t cookie)
+   {
+   TR_PatchNOPedGuardSiteOnMutableCallSiteChange::make(
+      _fe, _pmem, cookie, _loc, _dest, _sentinel);
+   }
+
+class MultiSiteOSRAssumptionFactory : public OSRAssumptionFactory
+   {
+   public:
+   MultiSiteOSRAssumptionFactory(
+      TR::Compilation *comp,
+      TR_PersistentCHTable *table,
+      const TR::Compilation::GuardSet &vguards,
+      int osrSites);
+
+   virtual bool commitOSRAssumptions();
+
+   protected:
+   virtual void makeClassRedefAssumption(TR_OpaqueClassBlock *clazz);
+   virtual void makeStaticFinalFieldModificationAssumption(TR_OpaqueClassBlock *clazz);
+   virtual void makeClassExtendAssumption(TR_OpaqueClassBlock *clazz);
+   virtual void makeMethodOverrideAssumption(TR_OpaqueMethodBlock *method);
+   virtual void makeMutableCallSiteTargetAssumption(uintptr_t cookie);
+
+   private:
+   TR::PatchSites *_sites;
+   };
+
+MultiSiteOSRAssumptionFactory::MultiSiteOSRAssumptionFactory(
+   TR::Compilation *comp,
+   TR_PersistentCHTable *table,
+   const TR::Compilation::GuardSet &vguards,
+   int osrSites)
+   : OSRAssumptionFactory(comp, table), _sites(NULL)
+   {
+   if (_classesForOSRRedefinition->size() == 0
+       && _classesForStaticFinalFieldModification->size() == 0
+       && _classesForOSROnExtend.empty()
+       && _methodsForOSROnOverride.empty()
+       && _methodsForOSROnHierarchyOverride.empty()
+       && _mutableCallSitesForOSR.empty())
+      {
+      return; // no assumptions, so don't create sites
+      }
+
+   _sites = new (_pmem) TR::PatchSites(_pmem, osrSites);
+   for (auto info = vguards.begin(); info != vguards.end(); ++info)
+      {
+      if ((*info)->getKind() == TR_OSRGuard || (*info)->mergedWithOSRGuard())
+         {
+         List<TR_VirtualGuardSite> &sites = (*info)->getNOPSites();
+         ListIterator<TR_VirtualGuardSite> it(&sites);
+         for (TR_VirtualGuardSite *site = it.getFirst(); site; site = it.getNext())
+            _sites->add(site->getLocation(), site->getDestination());
+         }
+      }
+   }
+
+bool MultiSiteOSRAssumptionFactory::commitOSRAssumptions()
+   {
+   if (_sites == NULL)
+      return true; // nothing to do
+   else
+      return OSRAssumptionFactory::commitOSRAssumptions();
+   }
+
+void MultiSiteOSRAssumptionFactory::makeClassRedefAssumption(
+   TR_OpaqueClassBlock *clazz)
+   {
+   TR_PatchMultipleNOPedGuardSitesOnClassRedefinition::make(
+      _fe, _pmem, clazz, _sites, _sentinel);
+   }
+
+void MultiSiteOSRAssumptionFactory::makeStaticFinalFieldModificationAssumption(
+   TR_OpaqueClassBlock *clazz)
+   {
+   TR_PatchMultipleNOPedGuardSitesOnStaticFinalFieldModification::make(
+      _fe, _pmem, clazz, _sites, _sentinel);
+   }
+
+void MultiSiteOSRAssumptionFactory::makeClassExtendAssumption(
+   TR_OpaqueClassBlock *clazz)
+   {
+   TR_PatchMultipleNOPedGuardSitesOnClassExtend::make(
+      _fe, _pmem, clazz, _sites, _sentinel);
+   }
+
+void MultiSiteOSRAssumptionFactory::makeMethodOverrideAssumption(
+   TR_OpaqueMethodBlock *method)
+   {
+   TR_PatchMultipleNOPedGuardSitesOnMethodOverride::make(
+      _fe, _pmem, method, _sites, _sentinel);
+   }
+
+void MultiSiteOSRAssumptionFactory::makeMutableCallSiteTargetAssumption(
+   uintptr_t cookie)
+   {
+   TR_PatchMultipleNOPedGuardSitesOnMutableCallSiteChange::make(
+      _fe, _pmem, cookie, _sites, _sentinel);
+   }
+
+} // anonymous namespace
+
+bool
 TR_CHTable::commitOSRVirtualGuards(
-   TR::Compilation *comp, const TR::Compilation::GuardSet &vguards)
+   TR::Compilation *comp,
+   const TR::Compilation::GuardSet &vguards,
+   TR_PersistentCHTable *table)
    {
    // Count patch sites with OSR assumptions
    int osrSites = 0;
@@ -480,55 +861,29 @@ TR_CHTable::commitOSRVirtualGuards(
          }
       }
 
-   TR_Array<TR_OpaqueClassBlock*> *clazzesForOSRRedefinition = comp->getClassesForOSRRedefinition();
-   TR_Array<TR_OpaqueClassBlock*> *clazzesForStaticFinalFieldModification = comp->getClassesForStaticFinalFieldModification();
-   if (osrSites == 0
-       || (clazzesForOSRRedefinition->size() == 0
-           && clazzesForStaticFinalFieldModification->size() == 0))
+   if (osrSites == 0)
       {
-      return;
+      return true;
       }
    else if (osrSites == 1)
       {
-      // Only one patch point, create an assumption for each class
-      for (int i = 0; i < clazzesForOSRRedefinition->size(); ++i)
-         TR_PatchNOPedGuardSiteOnClassRedefinition
-            ::make(comp->fe(), comp->trPersistentMemory(), (*clazzesForOSRRedefinition)[i], onlySite->getLocation(), onlySite->getDestination(), comp->getMetadataAssumptionList());
+      // Only one patch point, create individual assumptions
+      SingleSiteOSRAssumptionFactory factory(
+         comp, table, onlySite->getLocation(), onlySite->getDestination());
 
-      for (int i = 0; i < clazzesForStaticFinalFieldModification->size(); ++i)
-         TR_PatchNOPedGuardSiteOnStaticFinalFieldModification
-            ::make(comp->fe(), comp->trPersistentMemory(), (*clazzesForStaticFinalFieldModification)[i], onlySite->getLocation(), onlySite->getDestination(), comp->getMetadataAssumptionList());
+      return factory.commitOSRAssumptions();
       }
-   else if (osrSites > 1)
+   else
       {
+      TR_ASSERT_FATAL(osrSites > 1, "negative OSR site count: %d", osrSites);
+
       // Several points to patch, create collection
-      TR::PatchSites *points = new (comp->trPersistentMemory()) TR::PatchSites(comp->trPersistentMemory(), osrSites);
-      for (auto info = vguards.begin(); info != vguards.end(); ++info)
-         {
-         if ((*info)->getKind() == TR_OSRGuard || (*info)->mergedWithOSRGuard())
-            {
-            List<TR_VirtualGuardSite> &sites = (*info)->getNOPSites();
-            ListIterator<TR_VirtualGuardSite> it(&sites);
-            for (TR_VirtualGuardSite *site = it.getFirst(); site; site = it.getNext())
-               points->add(site->getLocation(), site->getDestination());
-            }
-         }
-
-      for (int i = 0; i < clazzesForOSRRedefinition->size(); ++i)
-         TR_PatchMultipleNOPedGuardSitesOnClassRedefinition
-            ::make(comp->fe(), comp->trPersistentMemory(), (*clazzesForOSRRedefinition)[i], points, comp->getMetadataAssumptionList());
-
-      for (int i = 0; i < clazzesForStaticFinalFieldModification->size(); ++i)
-         TR_PatchMultipleNOPedGuardSitesOnStaticFinalFieldModification
-            ::make(comp->fe(), comp->trPersistentMemory(), (*clazzesForStaticFinalFieldModification)[i], points, comp->getMetadataAssumptionList());
+      MultiSiteOSRAssumptionFactory factory(comp, table, vguards, osrSites);
+      return factory.commitOSRAssumptions();
       }
-
-   if (clazzesForOSRRedefinition->size() > 0)
-      comp->setHasClassRedefinitionAssumptions();
-   return;
    }
 
-void
+bool
 TR_CHTable::commitVirtualGuard(TR_VirtualGuard *info, List<TR_VirtualGuardSite> &sites,
                                TR_PersistentCHTable *table, TR::Compilation *comp)
    {
@@ -543,35 +898,23 @@ TR_CHTable::commitVirtualGuard(TR_VirtualGuard *info, List<TR_VirtualGuardSite> 
       static bool dontGroupOSRAssumptions = (feGetEnv("TR_DontGroupOSRAssumptions") != NULL);
       if (dontGroupOSRAssumptions)
          {
-         TR_Array<TR_OpaqueClassBlock*> *clazzesForRedefinition = comp->getClassesForOSRRedefinition();
-         TR_Array<TR_OpaqueClassBlock*> *clazzesForStaticFinalFieldModification = comp->getClassesForStaticFinalFieldModification();
-
-         if (clazzesForRedefinition || clazzesForStaticFinalFieldModification)
+         ListIterator<TR_VirtualGuardSite> it(&sites);
+         for (TR_VirtualGuardSite *site = it.getFirst(); site; site = it.getNext())
             {
-            ListIterator<TR_VirtualGuardSite> it(&sites);
-            for (TR_VirtualGuardSite *site = it.getFirst(); site; site = it.getNext())
-               {
-               for (uint32_t i = 0; i < clazzesForRedefinition->size(); ++i)
-                  TR_PatchNOPedGuardSiteOnClassRedefinition
-                     ::make(comp->fe(), comp->trPersistentMemory(), (*clazzesForRedefinition)[i], site->getLocation(), site->getDestination(), comp->getMetadataAssumptionList());
+            SingleSiteOSRAssumptionFactory factory(
+               comp, table, site->getLocation(), site->getDestination());
 
-               if (clazzesForRedefinition->size() > 0)
-                  comp->setHasClassRedefinitionAssumptions();
-
-               // Add assumption for static final field folding
-               for (uint32_t i = 0; i < clazzesForStaticFinalFieldModification->size(); ++i)
-                  TR_PatchNOPedGuardSiteOnStaticFinalFieldModification
-                     ::make(comp->fe(), comp->trPersistentMemory(), (*clazzesForStaticFinalFieldModification)[i], site->getLocation(), site->getDestination(), comp->getMetadataAssumptionList());
-               }
+            if (!factory.commitOSRAssumptions())
+               return false;
             }
          }
 
       // if it's not real OSR guard then we need to register
       // both the OSR site and the guard
       if (!info->mergedWithOSRGuard())
-         return;
+         return true;
       if (!info->isNopable())
-         return;
+         return true;
       }
 
    TR::SymbolReference      *symRef               = info->getSymbolReference();
@@ -597,9 +940,9 @@ TR_CHTable::commitVirtualGuard(TR_VirtualGuard *info, List<TR_VirtualGuardSite> 
       // if it's not real HCR guard then we need to register
       // both the HCR site and the guard
       if (!info->mergedWithHCRGuard())
-         return;
+         return true;
       if (!info->isNopable())
-         return;
+         return true;
       }
 
    if (info->getKind() == TR_DummyGuard)
@@ -608,39 +951,12 @@ TR_CHTable::commitVirtualGuard(TR_VirtualGuard *info, List<TR_VirtualGuardSite> 
       }
    else if (info->getKind() == TR_MutableCallSiteTargetGuard)
       {
-      static char *dontInvalidateMCSTargetGuards = feGetEnv("TR_dontInvalidateMCSTargetGuards");
-      if (!dontInvalidateMCSTargetGuards)
+      if (!dontInvalidateMCSTargetGuards())
          {
-#if defined(J9VM_OPT_JITSERVER)
-         // JITServer KOT: At the moment this method is called only by TR_CHTable::commit().
-         // TR_CHTable::commit() already checks comp->isOutOfProcessCompilation().
-         // Adding the following check as a precaution in case commitVirtualGuard() is called
-         // outside TR_CHTable::commit() in the future.
-         TR_ASSERT(!comp->isOutOfProcessCompilation(), "TR_CHTable::commitVirtualGuard() should not be called at the server\n");
-#endif /* defined(J9VM_OPT_JITSERVER) */
-         TR::KnownObjectTable::Index mcs = info->mutableCallSiteObject();
-         TR::KnownObjectTable *knot = comp->getKnownObjectTable();
-         TR_ASSERT(knot, "MutableCallSiteTargetGuard requires the Known Object Table");
-         uintptr_t *mcsReferenceLocation = knot->getPointerLocation(mcs);
-         void *cookiePointer = comp->trPersistentMemory()->allocatePersistentMemory(1);
-         uintptr_t potentialCookie = (uintptr_t)(uintptr_t)cookiePointer;
-         uintptr_t cookie = 0;
+         uintptr_t cookie = mcsTargetAssumptionCookie(
+            comp, info->mutableCallSiteObject(), info->mutableCallSiteEpoch());
 
-         TR::KnownObjectTable::Index currentIndex;
-
-            {
-            TR_J9VMBase *fej9 = (TR_J9VMBase *)(comp->fe());
-            TR::VMAccessCriticalSection invalidateMCSTargetGuards(fej9);
-            currentIndex = fej9->mutableCallSiteEpoch(comp, mcs);
-            if (info->mutableCallSiteEpoch() == currentIndex)
-               cookie = fej9->mutableCallSiteCookie(*mcsReferenceLocation, potentialCookie);
-            else
-               nopAssumptionIsValid = false;
-            }
-
-         if (cookie != potentialCookie)
-            comp->trPersistentMemory()->freePersistentMemory(cookiePointer);
-
+         nopAssumptionIsValid = cookie != 0;
          if (nopAssumptionIsValid)
             {
             ListIterator<TR_VirtualGuardSite> it(&sites);
@@ -651,8 +967,6 @@ TR_CHTable::commitVirtualGuard(TR_VirtualGuard *info, List<TR_VirtualGuardSite> 
                   ::make(comp->fe(), comp->trPersistentMemory(), cookie, site->getLocation(), site->getDestination(), comp->getMetadataAssumptionList());
                }
             }
-         else
-            logprintf(trace, log, "MutableCallSiteTargetGuard is already invalid.  Expected epoch: obj%d  Found: obj%d\n", info->mutableCallSiteEpoch(), currentIndex);
          }
       }
    else if ((info->getKind() == TR_MethodEnterExitGuard) || (info->getKind() == TR_DirectMethodGuard))
@@ -662,7 +976,7 @@ TR_CHTable::commitVirtualGuard(TR_VirtualGuard *info, List<TR_VirtualGuardSite> 
    else if (info->getKind() == TR_BreakpointGuard)
       {
       if (comp->getOption(TR_DisableNopBreakpointGuard))
-         return;
+         return true;
       TR_ResolvedMethod *breakpointedMethod = comp->getInlinedResolvedMethod(info->getCalleeIndex());
       TR_OpaqueMethodBlock *method = breakpointedMethod->getPersistentIdentifier();
       if (comp->fej9()->isMethodBreakpointed(method))
@@ -777,6 +1091,8 @@ TR_CHTable::commitVirtualGuard(TR_VirtualGuard *info, List<TR_VirtualGuardSite> 
          TR::PatchNOPedGuardSite::compensate(0, site->getLocation(), site->getDestination());
          }
       }
+
+   return true;
    }
 
 #if defined(J9VM_OPT_JITSERVER)

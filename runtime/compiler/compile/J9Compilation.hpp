@@ -330,6 +330,70 @@ class OMR_EXTENSIBLE Compilation : public OMR::CompilationConnector
    void addClassForStaticFinalFieldModification(TR_OpaqueClassBlock *clazz);
    TR_Array<TR_OpaqueClassBlock*> *getClassesForStaticFinalFieldModification() { return &_classForStaticFinalFieldModification; }
 
+   typedef TR::typed_allocator<TR_OpaqueClassBlock*, TR::Region&> ClassSetAlloc;
+   typedef std::less<TR_OpaqueClassBlock*> ClassSetCmp;
+   typedef std::set<TR_OpaqueClassBlock*, ClassSetCmp, ClassSetAlloc> ClassSet;
+
+   void addClassForOSROnExtend(TR_OpaqueClassBlock *clazz);
+   const ClassSet &getClassesForOSROnExtend() { return _classesForOSROnExtend; }
+
+   typedef TR::typed_allocator<TR_ResolvedMethod*, TR::Region&> ResolvedMethodSetAlloc;
+   typedef std::less<TR_ResolvedMethod*> ResolvedMethodSetCmp;
+   typedef std::set<TR_ResolvedMethod*, ResolvedMethodSetCmp, ResolvedMethodSetAlloc> ResolvedMethodSet;
+
+   void addMethodForOSROnOverride(TR_ResolvedMethod *method);
+   const ResolvedMethodSet &getMethodsForOSROnOverride() { return _methodsForOSROnOverride; }
+
+   /// A pair of a class and a method that is not overridden in its subclasses.
+   struct HierarchyAssumption
+      {
+      TR_OpaqueClassBlock * const _clazz;
+      TR::SymbolReference * const _methodSymRef;
+
+      HierarchyAssumption(TR_OpaqueClassBlock *clazz, TR::SymbolReference *methodSymRef)
+         : _clazz(clazz), _methodSymRef(methodSymRef) {}
+
+      bool operator<(const HierarchyAssumption &rhs) const
+         {
+         std::less<void*> ptrLt;
+         if (_clazz != rhs._clazz)
+            return ptrLt(_clazz, rhs._clazz);
+         else
+            return ptrLt(_methodSymRef, rhs._methodSymRef);
+         }
+      };
+
+   typedef TR::typed_allocator<HierarchyAssumption, TR::Region&> HierarchyAssumptionSetAlloc;
+   typedef std::less<HierarchyAssumption> HierarchyAssumptionSetCmp;
+   typedef std::set<HierarchyAssumption, HierarchyAssumptionSetCmp, HierarchyAssumptionSetAlloc> HierarchyAssumptionSet;
+
+   void addMethodForOSROnHierarchyOverride(TR_OpaqueClassBlock *clazz, TR::SymbolReference *methodSymRef);
+   const HierarchyAssumptionSet &getMethodsForOSROnHierarchyOverride() { return _methodsForOSROnHierarchyOverride; }
+
+   struct MutableCallSiteAssumption
+      {
+      const TR::KnownObjectTable::Index _mcs;
+      const TR::KnownObjectTable::Index _epoch;
+
+      MutableCallSiteAssumption(TR::KnownObjectTable::Index mcs, TR::KnownObjectTable::Index epoch)
+         : _mcs(mcs), _epoch(epoch) {}
+
+      bool operator<(const MutableCallSiteAssumption &rhs) const
+         {
+         if (_mcs != rhs._mcs)
+            return _mcs < rhs._mcs;
+         else
+            return _epoch < rhs._epoch;
+         }
+      };
+
+   typedef TR::typed_allocator<MutableCallSiteAssumption, TR::Region&> MutableCallSiteAssumptionSetAlloc;
+   typedef std::less<MutableCallSiteAssumption> MutableCallSiteAssumptionSetCmp;
+   typedef std::set<MutableCallSiteAssumption, MutableCallSiteAssumptionSetCmp, MutableCallSiteAssumptionSetAlloc> MutableCallSiteAssumptionSet;
+
+   void addMutableCallSiteForOSR(TR::KnownObjectTable::Index mcs, TR::KnownObjectTable::Index epoch);
+   const MutableCallSiteAssumptionSet &getMutableCallSitesForOSR() { return _mutableCallSitesForOSR; }
+
    TR::list<TR::AOTClassInfo*>* _aotClassInfo;
 
    J9VMThread *j9VMThread() { return _j9VMThread; }
@@ -611,6 +675,11 @@ private:
    TR_Array<TR_OpaqueClassBlock*>       _classForOSRRedefinition;
    // Classes that have their static final fields folded and need assumptions
    TR_Array<TR_OpaqueClassBlock*>       _classForStaticFinalFieldModification;
+
+   ClassSet _classesForOSROnExtend;
+   ResolvedMethodSet _methodsForOSROnOverride;
+   HierarchyAssumptionSet _methodsForOSROnHierarchyOverride;
+   MutableCallSiteAssumptionSet _mutableCallSitesForOSR;
 
    // cache profile information
    TR_AccessedProfileInfo *_profileInfo;

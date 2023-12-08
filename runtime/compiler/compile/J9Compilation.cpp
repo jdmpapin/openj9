@@ -197,6 +197,10 @@ J9::Compilation::Compilation(int32_t id,
    _keepaliveClasses(heapMemoryRegion),
    _classForOSRRedefinition(m),
    _classForStaticFinalFieldModification(m),
+   _classesForOSROnExtend(ClassSetCmp(), heapMemoryRegion),
+   _methodsForOSROnOverride(ResolvedMethodSetCmp(), heapMemoryRegion),
+   _methodsForOSROnHierarchyOverride(HierarchyAssumptionSetCmp(), heapMemoryRegion),
+   _mutableCallSitesForOSR(MutableCallSiteAssumptionSetCmp(), heapMemoryRegion),
    _profileInfo(NULL),
    _skippedJProfilingBlock(false),
    _reloRuntime(reloRuntime),
@@ -1521,6 +1525,58 @@ J9::Compilation::addClassForStaticFinalFieldModification(TR_OpaqueClassBlock *cl
          return;
 
    _classForStaticFinalFieldModification.add(clazz);
+   }
+
+/**
+ * \brief Arrange to patch OSR guards if \p clazz is extended.
+ *
+ * \param clazz The class that is assumed not to be extended
+ */
+void
+J9::Compilation::addClassForOSROnExtend(TR_OpaqueClassBlock *clazz)
+   {
+   _classesForOSROnExtend.insert(clazz);
+   }
+
+/**
+ * \brief Arrange to patch OSR guards if \p method is overridden.
+ *
+ * \param method The method that is assumed not to be overridden
+ */
+void
+J9::Compilation::addMethodForOSROnOverride(TR_ResolvedMethod *method)
+   {
+   _methodsForOSROnOverride.insert(method);
+   }
+
+/**
+ * \brief Arrange to patch OSR guards if \p method is overridden in a subclass
+ * of \p clazz.
+ *
+ * \p method may already be overridden, but not in a subclass of \p clazz.
+ *
+ * \param clazz The root of the class hierarchy of interest
+ * \param method The method that is assumed not to be overridden
+ */
+void
+J9::Compilation::addMethodForOSROnHierarchyOverride(
+   TR_OpaqueClassBlock *clazz, TR::SymbolReference *methodSymRef)
+   {
+   _methodsForOSROnHierarchyOverride.insert(HierarchyAssumption(clazz, methodSymRef));
+   }
+
+/**
+ * \brief Arrange to patch OSR guards if the MutableCallSite at \p *refLocation
+ * has its target changed away from \p epoch.
+ *
+ * \param refLocation A pointer to a reference to the MutableCallSite object
+ * \param epoch The known object table index of the observed MutableCallSite epoch
+ */
+void
+J9::Compilation::addMutableCallSiteForOSR(
+   TR::KnownObjectTable::Index mcs, TR::KnownObjectTable::Index epoch)
+   {
+   _mutableCallSitesForOSR.insert(MutableCallSiteAssumption(mcs, epoch));
    }
 
 /*
