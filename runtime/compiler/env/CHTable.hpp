@@ -110,6 +110,23 @@ class TR_PatchNOPedGuardSiteOnClassExtend : public TR::PatchNOPedGuardSite
    virtual TR_RuntimeAssumptionKind getAssumptionKind() { return RuntimeAssumptionOnClassExtend; }
    };
 
+class TR_PatchMultipleNOPedGuardSitesOnClassExtend : public TR::PatchMultipleNOPedGuardSites
+   {
+   protected:
+   TR_PatchMultipleNOPedGuardSitesOnClassExtend(
+      TR_PersistentMemory *pm, TR_OpaqueClassBlock *clazz, TR::PatchSites *sites)
+      : TR::PatchMultipleNOPedGuardSites(
+         pm, (uintptr_t)clazz, RuntimeAssumptionOnClassExtend, sites) {}
+   public:
+   static TR_PatchMultipleNOPedGuardSitesOnClassExtend *make(
+      TR_FrontEnd *fe,
+      TR_PersistentMemory *pm,
+      TR_OpaqueClassBlock *clazz,
+      TR::PatchSites *sites,
+      OMR::RuntimeAssumption **sentinel);
+   virtual TR_RuntimeAssumptionKind getAssumptionKind() { return RuntimeAssumptionOnClassExtend; }
+   };
+
 class TR_PatchNOPedGuardSiteOnMethodOverride : public TR::PatchNOPedGuardSite
    {
    protected:
@@ -120,6 +137,23 @@ class TR_PatchNOPedGuardSiteOnMethodOverride : public TR::PatchNOPedGuardSite
    public:
    static TR_PatchNOPedGuardSiteOnMethodOverride *make(
       TR_FrontEnd *fe, TR_PersistentMemory *pm, TR_OpaqueMethodBlock *method, uint8_t *loc, uint8_t *dest, OMR::RuntimeAssumption **sentinel);
+   virtual TR_RuntimeAssumptionKind getAssumptionKind() { return RuntimeAssumptionOnMethodOverride; }
+   };
+
+class TR_PatchMultipleNOPedGuardSitesOnMethodOverride : public TR::PatchMultipleNOPedGuardSites
+   {
+   protected:
+   TR_PatchMultipleNOPedGuardSitesOnMethodOverride(
+      TR_PersistentMemory *pm, TR_OpaqueMethodBlock *method, TR::PatchSites *sites)
+      : TR::PatchMultipleNOPedGuardSites(
+         pm, (uintptr_t)method, RuntimeAssumptionOnMethodOverride, sites) {}
+   public:
+   static TR_PatchMultipleNOPedGuardSitesOnMethodOverride *make(
+      TR_FrontEnd *fe,
+      TR_PersistentMemory *pm,
+      TR_OpaqueMethodBlock *method,
+      TR::PatchSites *sites,
+      OMR::RuntimeAssumption **sentinel);
    virtual TR_RuntimeAssumptionKind getAssumptionKind() { return RuntimeAssumptionOnMethodOverride; }
    };
 
@@ -204,7 +238,18 @@ class TR_PatchNOPedGuardSiteOnMutableCallSiteChange : public TR::PatchNOPedGuard
       : TR::PatchNOPedGuardSite(pm, key, RuntimeAssumptionOnMutableCallSiteChange, loc, dest) {}
    public:
    static TR_PatchNOPedGuardSiteOnMutableCallSiteChange *make(
-      TR_FrontEnd *fe, TR_PersistentMemory *pm, uintptr_t KEY_WILL_GO_HERE, uint8_t *loc, uint8_t *dest, OMR::RuntimeAssumption **sentinel);
+      TR_FrontEnd *fe, TR_PersistentMemory *pm, uintptr_t key, uint8_t *loc, uint8_t *dest, OMR::RuntimeAssumption **sentinel);
+   virtual TR_RuntimeAssumptionKind getAssumptionKind() { return RuntimeAssumptionOnMutableCallSiteChange; }
+   };
+
+class TR_PatchMultipleNOPedGuardSitesOnMutableCallSiteChange : public TR::PatchMultipleNOPedGuardSites
+   {
+   protected:
+   TR_PatchMultipleNOPedGuardSitesOnMutableCallSiteChange(TR_PersistentMemory *pm, uintptr_t key, TR::PatchSites *sites)
+      : TR::PatchMultipleNOPedGuardSites(pm, key, RuntimeAssumptionOnMutableCallSiteChange, sites) {}
+   public:
+   static TR_PatchMultipleNOPedGuardSitesOnMutableCallSiteChange *make(
+      TR_FrontEnd *fe, TR_PersistentMemory *pm, uintptr_t key, TR::PatchSites *sites, OMR::RuntimeAssumption **sentinel);
    virtual TR_RuntimeAssumptionKind getAssumptionKind() { return RuntimeAssumptionOnMutableCallSiteChange; }
    };
 
@@ -449,10 +494,12 @@ class TR_CHTable
    //
    bool commit(TR::Compilation *comp);
 
-   void commitVirtualGuard(TR_VirtualGuard *info, List<TR_VirtualGuardSite> &sites,
+   bool commitVirtualGuard(TR_VirtualGuard *info, List<TR_VirtualGuardSite> &sites,
                            TR_PersistentCHTable *table, TR::Compilation *comp);
-   void commitOSRVirtualGuards(
-      TR::Compilation *comp, const TR::Compilation::GuardSet &vguards);
+   bool commitOSRVirtualGuards(
+      TR::Compilation *comp,
+      const TR::Compilation::GuardSet &vguards,
+      TR_PersistentCHTable *table);
 #if defined(J9VM_OPT_JITSERVER)
    CHTableCommitData computeDataForCHTableCommit(TR::Compilation *comp);
 #endif

@@ -202,6 +202,8 @@ static bool skipOSRGuardInsertion(TR::Compilation* comp)
    return false;
    }
 
+extern bool jdmpNoFearPointAnalysis();
+
 int32_t TR_OSRGuardInsertion::perform()
    {
    if (!comp()->supportsInduceOSR() ||
@@ -212,7 +214,7 @@ int32_t TR_OSRGuardInsertion::perform()
       }
 
    bool needHCRGuardRemoval = hasHCRGuard(comp());
-   bool hasFearPoint = hasOSRFearPoint(comp());
+   bool hasFearPoint = hasOSRFearPoint(comp()) || jdmpNoFearPointAnalysis();
    bool canInsertOSRGuards = !skipOSRGuardInsertion(comp());
 
    TR_ASSERT_FATAL(!hasFearPoint || canInsertOSRGuards, "Fear point exists without OSR protection");
@@ -260,7 +262,7 @@ int32_t TR_OSRGuardInsertion::perform()
 
       // Future fear generating optimizations
       //
-      if (!fearGeneratingNodes.isEmpty())
+      if (!fearGeneratingNodes.isEmpty() || jdmpNoFearPointAnalysis())
          {
          insertOSRGuards(fearGeneratingNodes);
          }
@@ -433,7 +435,9 @@ void TR_OSRGuardInsertion::removeHCRGuards(TR_BitVector &fearGeneratingNodes, TR
 
 int32_t TR_OSRGuardInsertion::insertOSRGuards(TR_BitVector &fearGeneratingNodes)
    {
-   static char *forceOSRInsertion = feGetEnv("TR_ForceOSRGuardInsertion");
+   bool noAnalysis = jdmpNoFearPointAnalysis();
+   static bool forceOSRInsertion = feGetEnv("TR_ForceOSRGuardInsertion") != NULL || noAnalysis;
+
    OMR::Logger *log = comp()->log();
 
    if (!comp()->getFlowGraph()->getStructure())
@@ -462,15 +466,18 @@ int32_t TR_OSRGuardInsertion::insertOSRGuards(TR_BitVector &fearGeneratingNodes)
             continue;
             }
 
-         // set the fearful state based on all successors - anyone who has an OSR edge is a source
-         // of fear and we must add a patch point if we encounter a yield otherwise we are safe
-         TR_SuccessorIterator sit(block);
-         fear.empty();
-         for (TR::CFGEdge *edge = sit.getFirst(); edge; edge = sit.getNext())
+         if (!noAnalysis)
             {
-            TR::Block *succ = toBlock(edge->getTo());
-            if (succ)
-                fear |= *(fearAnalysis._blockAnalysisInfo[succ->getNumber()]);
+            // set the fearful state based on all successors - anyone who has an OSR edge is a source
+            // of fear and we must add a patch point if we encounter a yield otherwise we are safe
+            TR_SuccessorIterator sit(block);
+            fear.empty();
+            for (TR::CFGEdge *edge = sit.getFirst(); edge; edge = sit.getNext())
+               {
+               TR::Block *succ = toBlock(edge->getTo());
+               if (succ)
+                   fear |= *(fearAnalysis._blockAnalysisInfo[succ->getNumber()]);
+               }
             }
 
          continue;
@@ -628,7 +635,7 @@ int32_t TR_OSRGuardInsertion::insertOSRGuards(TR_BitVector &fearGeneratingNodes)
                }
             fear.empty();
             }
-         else
+         else if (!noAnalysis)
             {
             TR::DebugCounter::prependDebugCounter(comp(), TR::DebugCounter::debugCounterName(comp(), "osrGuardSummary/nofear/%s/%s/=%d", label, comp()->getHotnessName(comp()->getMethodHotness()), block->getFrequency()), cursor);
             if (cursor->getNode()->getGlobalIndex() < initialNodeCount)
@@ -639,7 +646,7 @@ int32_t TR_OSRGuardInsertion::insertOSRGuards(TR_BitVector &fearGeneratingNodes)
          {
          TR::DebugCounter::prependDebugCounter(comp(), TR::DebugCounter::debugCounterName(comp(), "osrGuardSummary/allowlist/asynccheck/%s/=%d", comp()->getHotnessName(comp()->getMethodHotness()), block->getFrequency()), cursor);
          }
-      else
+      else if (!noAnalysis)
          {
          if (cursor->getNode()->getGlobalIndex() < initialNodeCount)
             fear |= *fearAnalysis.generatedFear(cursor->getNode());

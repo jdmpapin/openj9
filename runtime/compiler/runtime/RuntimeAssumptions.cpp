@@ -83,10 +83,12 @@ TR_PatchNOPedGuardSiteOnClassPreInitialize::hashCode(char *sig, uint32_t sigLen)
    return sum;
    }
 
+extern bool jdmpHackGuardsEnabled();
+
 bool jdmpHackStwAssumptions()
    {
    static const bool enable =
-      feGetEnv("TR_jdmpHackStwAssumptions") != NULL;
+      feGetEnv("TR_jdmpHackStwAssumptions") != NULL || jdmpHackGuardsEnabled();
    return enable;
    };
 
