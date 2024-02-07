@@ -231,6 +231,7 @@ J9::Compilation::Compilation(int32_t id,
    _constProvenanceGraph(new (heapMemoryRegion) J9::ConstProvenanceGraph(self())),
    _osrProhibitedOverRangeOfTrees(false),
    _wasFearPointAnalysisDone(false),
+   _isFearPointPlacementUnrestricted(false),
    _permanentLoadersInitialized(false),
    _crashedDueToOrphanedConstRefs(false)
    {
@@ -286,6 +287,20 @@ J9::Compilation::Compilation(int32_t id,
          parm0->setKnownObjectIndex(index);
          }
       }
+
+   // Determine whether fear point placement is to remain unrestricted. This
+   // can allow transformations that would otherwise be impractical due to the
+   // difficulty of avoiding OSR prohibitions. However, it also prevents any
+   // transformation that requires OSR prohibition.
+#if defined(J9VM_OPT_OPENJDK_METHODHANDLE)
+   _isFearPointPlacementUnrestricted =
+      self()->canAddOSRAssumptions()
+      && TR::TransformUtil::enableEarlyGuardedStaticFinalFieldFolding();
+#else
+   // J9 method handles necessarily prohibit OSR and therefore it's not always
+   // possible to avoid restricting fear point placement.
+   _isFearPointPlacementUnrestricted = false;
+#endif
    }
 
 J9::Compilation::~Compilation()
