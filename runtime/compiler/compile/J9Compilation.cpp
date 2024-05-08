@@ -1618,7 +1618,7 @@ J9::Compilation::permanentLoaders()
          TR_PersistentClassLoaderTable *loaderTable =
             persistentInfo->getPersistentClassLoaderTable();
 
-         loaderTable->getPermanentLoaders(fej9()->vmThread(), _permanentLoaders);
+         loaderTable->getPermanentLoaders(_permanentLoaders);
          }
       }
 

@@ -2825,7 +2825,7 @@ void jitAddPermanentLoader(J9VMThread *currentThread, J9ClassLoader *loader)
    TR_PersistentClassLoaderTable *loaderTable =
       persistentInfo->getPersistentClassLoaderTable();
 
-   loaderTable->addPermanentLoader(currentThread, loader);
+   loaderTable->addPermanentLoader(loader);
    }
 
 void jitMethodBreakpointed(J9VMThread *currentThread, J9Method *j9method)
@@ -2901,13 +2901,17 @@ void jitSetMutableCallSiteTarget(J9VMThread *vmThread, j9object_t mcs, j9object_
    uintptr_t targetOffset = fej9->getInstanceFieldOffset(
       mcsClass, "target", "Ljava/lang/invoke/MethodHandle;");
 
-   TR::ClassTableCriticalSection commit(fej9);
+   TR::MonitorTable::acquireCHTableMutex();
 
    // There are no concurrent modifications because target is only modified
    // while holding the CH table lock.
    uintptr_t prevTarget = fej9->getReferenceFieldAt((uintptr_t)mcs, targetOffset);
    if ((uintptr_t)newTarget == prevTarget)
-      return; // Nothing to do.
+      {
+      // Nothing to do.
+      TR::MonitorTable::releaseCHTableMutex();
+      return;
+      }
 
    // The CH table lock must be acquired before reading the cookie. Otherwise,
    // a nonzero value written by another thread (in the compiler's CH table
@@ -3001,6 +3005,8 @@ void jitSetMutableCallSiteTarget(J9VMThread *vmThread, j9object_t mcs, j9object_
    targetOffset += TR::Compiler->om.objectHeaderSizeInBytes();
    vmThread->javaVM->memoryManagerFunctions->j9gc_objaccess_mixedObjectStoreObject(
       vmThread, mcs, targetOffset, newTarget, 0);
+
+   TR::MonitorTable::releaseCHTableMutex();
    }
 #endif
 
@@ -3040,10 +3046,10 @@ void jitUpdateMethodOverride(J9VMThread * vmThread, J9Class * cl, J9Method * ove
    bool isSMP = 1; // conservative
    if (!TR::Options::getCmdLineOptions()->getOption(TR_DisableCHOpts))
       {
-      jitAcquireClassTableMutex(vmThread);
+      TR::MonitorTable::acquireCHTableMutex();
       compInfo->getPersistentInfo()->getPersistentCHTable()->methodGotOverridden(
                                                                                  vm, compInfo->persistentMemory(), (TR_OpaqueMethodBlock *) overriddingMethod, (TR_OpaqueMethodBlock *) overriddenMethod, isSMP);
-      jitReleaseClassTableMutex(vmThread);
+      TR::MonitorTable::releaseCHTableMutex();
       }
    }
 
@@ -3225,6 +3231,9 @@ static void updateOverriddenFlag( J9VMThread *vm , J9Class *cl)
       }
    }
 
+static bool updateCHTableForImplementedInterfaces(
+   J9Class *j9c, TR_PersistentCHTable *table, TR_J9VMBase *vm, J9VMThread *vmThread);
+
 static bool updateCHTable(J9VMThread * vmThread, J9Class  * cl)
    {
    typedef void JIT_METHOD_OVERRIDE_UPDATE(J9VMThread *, J9Class *, J9Method *, J9Method *);
@@ -3232,7 +3241,6 @@ static bool updateCHTable(J9VMThread * vmThread, J9Class  * cl)
    JIT_METHOD_OVERRIDE_UPDATE * callBack = jitUpdateMethodOverride;
    bool updateFailed = false;
 
-   {
    J9JITConfig * jitConfig = vmThread->javaVM->jitConfig;
 
    TR::CompilationInfo * compInfo = TR::CompilationInfo::get(jitConfig);
@@ -3247,6 +3255,30 @@ static bool updateCHTable(J9VMThread * vmThread, J9Class  * cl)
 
    TR_J9VMBase *vm = TR_J9VMBase::get(jitConfig, vmThread);
    TR_OpaqueClassBlock *clazz = ((TR_J9VMBase *)vm)->convertClassPtrToClassOffset(cl);
+   TR_PersistentClassInfo *classInfo = NULL;
+
+   if (table != NULL)
+      {
+      classInfo = table->findClassInfo(clazz);
+      if (classInfo->alreadyUpdatedCHTable())
+         {
+         // CH table update already succeeded for clazz, so there's nothing to
+         // do and we can immediately return success. This is only possible for
+         // interfaces, since we'll enter here when attempting to initialize
+         // the interface, but also when we attempt to initialize any class
+         // that implements the interface (without its superclass also
+         // implementing it). A class OTOH will only come through here once.
+         TR_ASSERT_FATAL(
+            vm->isInterfaceClass(clazz),
+            "already updated type %p should be an interface",
+            clazz);
+
+         return true; // success
+         }
+
+      if (!updateCHTableForImplementedInterfaces(cl, table, vm, vmThread))
+         updateFailed = true;
+      }
 
    char *name; int32_t len;
    bool p = TR::Options::getVerboseOption(TR_VerboseHookDetailsClassLoading);
@@ -3254,10 +3286,12 @@ static bool updateCHTable(J9VMThread * vmThread, J9Class  * cl)
       {
       name = vm->getClassNameChars(clazz, len);
       TR_VerboseLog::writeLineLocked(TR_Vlog_HD, "--updt-- %.*s", len, name);
+      if (updateFailed)
+         TR_VerboseLog::writeLineLocked(TR_Vlog_HD, "\tinterfaces failed");
       }
 
    int32_t classDepth = J9CLASS_DEPTH(cl) - 1;
-   if (classDepth >= 0)
+   if (classDepth >= 0 && !updateFailed)
       {
       J9Class * superCl = cl->superclasses[classDepth];
       superCl->classDepthAndFlags |= J9AccClassHasBeenOverridden;
@@ -3293,15 +3327,73 @@ static bool updateCHTable(J9VMThread * vmThread, J9Class  * cl)
             }
          }
       }
-   }
+
    // method override
    if(!TR::Options::getCmdLineOptions()->getOption(TR_DisableNewMethodOverride))
       updateOverriddenFlag(vmThread,cl);
    else
       jitUpdateInlineAttribute(vmThread, cl, (void *)callBack);
 
+   if (table != NULL && !updateFailed)
+      classInfo->setAlreadyUpdatedCHTable();
 
    return !updateFailed;
+   }
+
+static bool assertSuperclass(J9Class *clazz, bool ok, const char *problem)
+   {
+   if (ok)
+      return false;
+
+   J9Class *superClass = clazz->superclasses[J9CLASS_DEPTH(clazz) - 1];
+   TR_ASSERT_FATAL(
+      false,
+      "updating CH table for %p: superclass %p %s",
+      clazz,
+      superClass,
+      problem);
+   }
+
+static bool updateCHTableForImplementedInterfaces(
+   J9Class *j9c, TR_PersistentCHTable *table, TR_J9VMBase *vm, J9VMThread *vmThread)
+   {
+   TR_OpaqueClassBlock *clazz = vm->convertClassPtrToClassOffset(j9c);
+   if (vm->isInterfaceClass(clazz))
+      return true; // we only care about regular classes
+
+   int32_t classDepth = J9CLASS_DEPTH(j9c) - 1;
+   if (classDepth < 0)
+      return true;
+
+   J9Class *superJ9Class = j9c->superclasses[classDepth];
+   TR_OpaqueClassBlock *superClass = vm->convertClassPtrToClassOffset(superJ9Class);
+   TR_PersistentClassInfo *superClassInfo = table->findClassInfo(superClass);
+   assertSuperclass(j9c, superClassInfo != NULL, "is not in CH table");
+   assertSuperclass(j9c, superClassInfo->isInitialized(), "hasn't done preinit");
+   assertSuperclass(j9c, superClassInfo->alreadyUpdatedCHTable(), "is not updated");
+
+   // Only update the CH table for interfaces that are newly implemented in clazz.
+   // The ones that are implemented by the superclass have already been done.
+   J9ITable *end = (J9ITable*)superJ9Class->iTable;
+   if (end != NULL)
+      {
+      TR_OpaqueClassBlock *iface = vm->convertClassPtrToClassOffset(end->interfaceClass);
+      TR_PersistentClassInfo *endInfo = table->findClassInfo(iface);
+      assertSuperclass(j9c, endInfo != NULL, "has itable not in CH table");
+      assertSuperclass(j9c, endInfo->alreadyUpdatedCHTable(), "has itable that isn't updated");
+      }
+
+   bool ok = true;
+   for (J9ITable *iTable = (J9ITable*)j9c->iTable; iTable != end; iTable = iTable->next)
+      {
+      if (!updateCHTable(vmThread, iTable->interfaceClass))
+         {
+         ok = false;
+         break;
+         }
+      }
+
+   return ok;
    }
 
 /**
@@ -3705,55 +3797,23 @@ static bool chTableOnClassLoad(J9VMThread *vmThread, TR_OpaqueClassBlock *clazz,
       )
       {
       TR_PersistentClassInfo *info = compInfo->getPersistentInfo()->getPersistentCHTable()->classGotLoaded(vm, clazz);
-
-      if (info)
+      if (info == NULL)
          {
-         // If its an interface class it won't be initialized, so we have to update the CHTable now.
-         // Otherwise, we will update the CHTable once the class gets initialized (i.e. live)
-         //
-         if (vm->isInterfaceClass(clazz))
-            {
-            if (!updateCHTable(vmThread, cl))
-               {
-               allocFailed = true;
-               compInfo->getPersistentInfo()->getPersistentCHTable()->removeClass(vm, clazz, info, true);
-               }
-            }
-         else if (vm->isClassArray(clazz))
-            {
-            if (!compInfo->getPersistentInfo()->getPersistentCHTable()->classGotInitialized(vm, compInfo->persistentMemory(), clazz))
-               {
-               TR_PersistentClassInfo *arrayClazzInfo = compInfo->getPersistentInfo()->getPersistentCHTable()->findClassInfo(clazz);
-               if (arrayClazzInfo)
-                  compInfo->getPersistentInfo()->getPersistentCHTable()->removeClass(vm, clazz, arrayClazzInfo, false);
-               }
-            TR_OpaqueClassBlock *compClazz = vm->getComponentClassFromArrayClass(clazz);
-            if (compClazz)
-               {
-               TR_PersistentClassInfo *clazzInfo = compInfo->getPersistentInfo()->getPersistentCHTable()->findClassInfo(compClazz);
-               if (clazzInfo && !clazzInfo->isInitialized())
-                  {
-                  bool initFailed = false;
-                  if (!compInfo->getPersistentInfo()->getPersistentCHTable()->classGotInitialized(vm, compInfo->persistentMemory(), compClazz))
-                     initFailed = true;
+         allocFailed = true;
+         }
+      else if (vm->isClassArray(clazz))
+         {
+         TR_PersistentCHTable *table =
+            compInfo->getPersistentInfo()->getPersistentCHTable();
 
-                  if (!initFailed &&
-                      !vm->isClassArray(compClazz) &&
-                      !vm->isInterfaceClass(compClazz) &&
-                      !vm->isPrimitiveClass(compClazz))
-                     initFailed = !updateCHTable(vmThread, ((J9Class *) compClazz));
-
-                  if (initFailed)
-                     {
-                     compInfo->getPersistentInfo()->getPersistentCHTable()->removeClass(vm, compClazz, clazzInfo, false);
-                     allocFailed = true;
-                     }
-                  }
-               }
+         if (!table->classGotInitialized(vm, compInfo->persistentMemory(), clazz))
+            {
+            allocFailed = true;
+            TR_PersistentClassInfo *arrayClazzInfo = compInfo->getPersistentInfo()->getPersistentCHTable()->findClassInfo(clazz);
+            if (arrayClazzInfo)
+               compInfo->getPersistentInfo()->getPersistentCHTable()->removeClass(vm, clazz, arrayClazzInfo, false);
             }
          }
-      else
-         allocFailed = true;
       }
 
    return allocFailed;
@@ -3826,7 +3886,7 @@ void jitHookClassLoadHelper(J9VMThread *vmThread,
    bool allocFailed = false;
    TR_J9VMBase *vm = TR_J9VMBase::get(jitConfig, vmThread);
    TR_OpaqueClassBlock *clazz = TR::Compiler->cls.convertClassPtrToClassOffset(cl);
-   jitAcquireClassTableMutex(vmThread);
+   TR::MonitorTable::acquireCHTableMutex();
 
    compInfo->getPersistentInfo()->incNumLoadedClasses();
 
@@ -3937,7 +3997,7 @@ void jitHookClassLoadHelper(J9VMThread *vmThread,
    // Determine whether this class gets lock reservation
    checkForLockReservation(vmThread, jitConfig, classLoader, clazz, vm, compInfo, className, classNameLen);
 
-   jitReleaseClassTableMutex(vmThread);
+   TR::MonitorTable::releaseCHTableMutex();
    }
 
 static void jitHookClassLoad(J9HookInterface * * hookInterface, UDATA eventNum, void * eventData, void * userData)
@@ -3980,9 +4040,8 @@ static bool chTableOnClassPreinitialize(J9VMThread *vmThread,
          if (!initFailed && !compInfo->getPersistentInfo()->getPersistentCHTable()->classGotInitialized(vm, compInfo->persistentMemory(), clazz))
             initFailed = true;
 
-         if (!initFailed &&
-             !vm->isInterfaceClass(clazz))
-            updateCHTable(vmThread, cl);
+         if (!initFailed && !updateCHTable(vmThread, cl))
+            initFailed = true;
          }
       else
          {
@@ -3992,8 +4051,17 @@ static bool chTableOnClassPreinitialize(J9VMThread *vmThread,
 
       if (initFailed)
          {
-         TR_PersistentClassInfo *info = compInfo->getPersistentInfo()->getPersistentCHTable()->findClassInfo(clazz);
-         compInfo->getPersistentInfo()->getPersistentCHTable()->removeClass(vm, clazz, info, false);
+         // Don't remove interfaces on failure. It's possible to attempt to
+         // initialize an implementing class even if the interface hasn't been
+         // initialized, and so probably also if the interface initialization
+         // has been attempted but failed. In that case we'll try again to
+         // updateCHTable() for the interface, which will require it to still
+         // exist in the CH table.
+         if (!vm->isInterfaceClass(clazz))
+            {
+            TR_PersistentClassInfo *info = compInfo->getPersistentInfo()->getPersistentCHTable()->findClassInfo(clazz);
+            compInfo->getPersistentInfo()->getPersistentCHTable()->removeClass(vm, clazz, info, false);
+            }
          }
       }
 
@@ -4016,11 +4084,11 @@ void jitHookClassPreinitializeHelper(J9VMThread *vmThread,
       TR_VerboseLog::writeLineLocked(TR_Vlog_HD, "--init-- %.*s", len, className);
       }
 
-   jitAcquireClassTableMutex(vmThread);
+   TR::MonitorTable::acquireCHTableMutex();
 
    *classPreinitializeEventFailed = chTableOnClassPreinitialize(vmThread, cl, clazz, compInfo, vm);
 
-   jitReleaseClassTableMutex(vmThread);
+   TR::MonitorTable::releaseCHTableMutex();
    }
 
 

@@ -105,29 +105,6 @@ jitGetClassOfFieldFromCP(J9VMThread *vmStruct, J9ConstantPool *constantPool, UDA
 	return result;
 }
 
-
-/**
- * @param vmTread
- */
-
-void  
-jitAcquireClassTableMutex (J9VMThread *vmThread) 
-{
-	
-	omrthread_monitor_enter (vmThread->javaVM->classTableMutex);
-}
-
-/**
- * @param vmTread
- */
-
-void  
-jitReleaseClassTableMutex (J9VMThread *vmThread) 
-{
-	
-	omrthread_monitor_exit (vmThread->javaVM->classTableMutex);
-}
- 
 /**
  * @param fieldIndex the index of an entry in a constant pool
  * @param ramMethod  the method from which the cpIndex was taken

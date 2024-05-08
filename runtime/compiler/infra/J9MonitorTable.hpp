@@ -54,6 +54,7 @@ class OMR_EXTENSIBLE MonitorTable : public OMR::MonitorTableConnector
    void free();
 
    J9::RWMonitor *getClassUnloadMonitor() { return &_classUnloadMonitor; }
+   // TODO: delete getClassTableMutex(), which is still here just for J9::RetainedMethodSet.
    TR::Monitor *getClassTableMutex() { return &_classTableMutex; }
    TR::Monitor *getIProfilerPersistenceMonitor() { return &_iprofilerPersistenceMonitor; }
    void removeAndDestroy(TR::Monitor *monitor);
@@ -65,6 +66,14 @@ class OMR_EXTENSIBLE MonitorTable : public OMR::MonitorTableConnector
    int32_t getClassUnloadMonitorHoldCount(int32_t i) const { return _classUnloadMonitorHolders[i]; }
 
    bool allocInitClassUnloadMonitorHolders(uint32_t allowedTotalCompThreads);
+
+   static void acquireCHTableMutex();
+   static void releaseCHTableMutex();
+   static bool currentThreadOwnsCHTableMutex();
+
+   static void acquireVMClassTableMutex();
+   static void releaseVMClassTableMutex();
+   static bool currentThreadOwnsVMClassTableMutex();
 
    private:
 
@@ -82,6 +91,7 @@ class OMR_EXTENSIBLE MonitorTable : public OMR::MonitorTableConnector
    TR::Monitor _tableMonitor;
    TR::Monitor _j9ScratchMemoryPoolMonitor;
    J9::RWMonitor _classUnloadMonitor;
+   TR::Monitor _chTableMutex;  // mutex protecting the persistent CH table
    TR::Monitor _classTableMutex;  // JavaVM's class table mutex
    TR::Monitor _iprofilerPersistenceMonitor;
 

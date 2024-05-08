@@ -193,7 +193,8 @@ TR_PersistentClassLoaderTable::associateClassLoaderWithClass(J9VMThread *vmThrea
    // Since current thread has shared VM access and holds the classTableMutex,
    // no other thread can be modifying the table at the same time.
    TR_ASSERT(hasSharedVMAccess(vmThread), "Must have shared VM access");
-   TR_ASSERT(TR::MonitorTable::get()->getClassTableMutex()->owned_by_self(), "Must hold classTableMutex");
+   // FATAL to make sure it compiles. FIXME put it back I guess?
+   TR_ASSERT_FATAL(TR::MonitorTable::currentThreadOwnsCHTableMutex(), "Must hold CHTableMutex");
 
    bool useAOTCache = false;
 #if defined(J9VM_OPT_JITSERVER)
@@ -468,15 +469,14 @@ TR_PersistentClassLoaderTable::removeClassLoader(J9VMThread *vmThread, void *loa
    }
 
 void
-TR_PersistentClassLoaderTable::addPermanentLoader(
-   J9VMThread *vmThread, J9ClassLoader *loader)
+TR_PersistentClassLoaderTable::addPermanentLoader(J9ClassLoader *loader)
    {
    TR_ASSERT_FATAL(
       loader->outlivingLoaders == J9CLASSLOADER_OUTLIVING_LOADERS_PERMANENT,
       "loader %p is not permanent",
       loader);
 
-   jitAcquireClassTableMutex(vmThread);
+   TR::MonitorTable::acquireCHTableMutex();
    try
       {
       _permanentLoaders.push_back(loader);
@@ -486,14 +486,14 @@ TR_PersistentClassLoaderTable::addPermanentLoader(
       // OOM. There's no strict requirement to remember this loader, so just don't.
       }
 
-   jitReleaseClassTableMutex(vmThread);
+   TR::MonitorTable::releaseCHTableMutex();
    }
 
 void
 TR_PersistentClassLoaderTable::getPermanentLoaders(
-   J9VMThread *vmThread, TR::vector<J9ClassLoader*, TR::Region&> &dest) const
+   TR::vector<J9ClassLoader*, TR::Region&> &dest) const
    {
-   jitAcquireClassTableMutex(vmThread);
+   TR::MonitorTable::acquireCHTableMutex();
    try
       {
       dest.clear();
@@ -502,9 +502,9 @@ TR_PersistentClassLoaderTable::getPermanentLoaders(
       }
    catch (...)
       {
-      jitReleaseClassTableMutex(vmThread);
+      TR::MonitorTable::releaseCHTableMutex();
       throw;
       }
 
-   jitReleaseClassTableMutex(vmThread);
+   TR::MonitorTable::releaseCHTableMutex();
    }

@@ -63,7 +63,8 @@ J9::Monitor::initFromVMMutex(void *mutex)
 void
 J9::Monitor::enter()
    {
-   TR_ASSERT(_monitor != TR::MonitorTable::get()->getClassTableMutex()->getVMMonitor(), "Use TR::ClassTableCriticalSection instead");
+   // FATAL to make sure it compiles... FIXME: put it back to non-fatal I guess
+   TR_ASSERT_FATAL(_monitor != TR::MonitorTable::get()->_chTableMutex._monitor, "Use TR::ClassTableCriticalSection instead");
    j9thread_monitor_enter(_monitor);
    }
 

@@ -65,6 +65,8 @@ J9::MonitorTable::init(
 #endif
    if (!table->_iprofilerPersistenceMonitor.init("JIT-IProfilerPersistenceMonitor")) return 0;
 
+   if (!table->_chTableMutex.init("JIT-CHTableMutex")) return 0;
+
    // Setup a wrapper for VM's monitors that the JIT can acquire
    if (!table->_classTableMutex.initFromVMMutex(javaVM->classTableMutex)) return 0;
 
@@ -184,6 +186,7 @@ J9::MonitorTable::isThreadInSafeMonitorState(J9VMThread *vmThread)
    // If we hold any of the following locks, return failure.
    if (_tableMonitor.owned_by_self()               ||
        _j9ScratchMemoryPoolMonitor.owned_by_self() ||
+       _chTableMutex.owned_by_self()               ||
        _classTableMutex.owned_by_self()            ||
        _iprofilerPersistenceMonitor.owned_by_self()
        )
@@ -211,6 +214,8 @@ J9::MonitorTable::monitorHeldByCurrentThread()
       return &_tableMonitor;
    if (_j9ScratchMemoryPoolMonitor.owned_by_self())
       return &_j9ScratchMemoryPoolMonitor;
+   if (_chTableMutex.owned_by_self())
+      return &_chTableMutex;
    if (_classTableMutex.owned_by_self())
       return &_classTableMutex;
    if (_iprofilerPersistenceMonitor.owned_by_self())
@@ -254,4 +259,40 @@ J9::MonitorTable::readReleaseClassUnloadMonitor(int32_t compThreadIndex)
       TR_ASSERT(false, "comp thread %d does not have classUnloadMonitor", compThreadIndex);
       return -1; // could not release monitor
       }
+   }
+
+void
+J9::MonitorTable::acquireCHTableMutex()
+   {
+   j9thread_monitor_enter(get()->_chTableMutex._monitor);
+   }
+
+void
+J9::MonitorTable::releaseCHTableMutex()
+   {
+   j9thread_monitor_exit(get()->_chTableMutex._monitor);
+   }
+
+bool
+J9::MonitorTable::currentThreadOwnsCHTableMutex()
+   {
+   return get()->_chTableMutex.owned_by_self();
+   }
+
+void
+J9::MonitorTable::acquireVMClassTableMutex()
+   {
+   j9thread_monitor_enter(get()->_classTableMutex._monitor);
+   }
+
+void
+J9::MonitorTable::releaseVMClassTableMutex()
+   {
+   j9thread_monitor_exit(get()->_classTableMutex._monitor);
+   }
+
+bool
+J9::MonitorTable::currentThreadOwnsVMClassTableMutex()
+   {
+   return get()->_classTableMutex.owned_by_self();
    }

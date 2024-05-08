@@ -398,7 +398,7 @@ runJitdump(char *label, J9RASdumpContext *context, J9RASdumpAgent *agent)
       }
 
    // Release other monitors as well. In particular CHTable and classUnloadMonitor must not be held.
-   while (TR::MonitorTable::get()->getClassTableMutex()->owned_by_self())
+   while (TR::MonitorTable::currentThreadOwnsCHTableMutex())
       {
       frontendOfThread->releaseClassTableMutex(false);
       }
