@@ -150,6 +150,9 @@ class TR_PersistentClassInfo : public TR_Link0<TR_PersistentClassInfo>
    virtual void setAlreadyCheckedForAnnotations(bool v = true){ _flags.set(_alreadyScannedForAnnotations, v); }
    bool alreadyCheckedForAnnotations()            { return _flags.testAny(_alreadyScannedForAnnotations); }
 
+   virtual void setAlreadyUpdatedCHTable(bool v = true) { _flags.set(_alreadyUpdatedCHTable, v); }
+   bool alreadyUpdatedCHTable() { return _flags.testAny(_alreadyUpdatedCHTable); }
+
    virtual void setCannotTrustStaticFinal(bool v = true)  { _flags.set(_cannotTrustStaticFinal, v); }
    bool cannotTrustStaticFinal()                  { return _flags.testAny(_cannotTrustStaticFinal); }
 
@@ -171,6 +174,7 @@ class TR_PersistentClassInfo : public TR_Link0<TR_PersistentClassInfo>
       _cannotTrustStaticFinal               = 0x10,
       // HCR
       _classHasBeenRedefined                = 0x20,
+      _alreadyUpdatedCHTable                = 0x40,
       _dummyEnum
       };
 

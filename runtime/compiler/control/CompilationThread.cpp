@@ -10364,8 +10364,8 @@ TR::CompilationInfoPerThreadBase::compile(
    setCompilationShouldBeInterrupted(0);
 
    // We should not have the classTableMutex at this point
-   TR_ASSERT_FATAL(!TR::MonitorTable::get()->getClassTableMutex()->owned_by_self(),
-                   "Should not still own classTableMutex");
+   TR_ASSERT_FATAL(!TR::MonitorTable::currentThreadOwnsCHTableMutex(),
+                   "Should not still own CHTableMutex");
 
    // Increment the number of JIT compilations (either successful or not)
    // performed by this compilation thread

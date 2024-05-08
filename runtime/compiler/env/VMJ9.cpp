@@ -7279,17 +7279,38 @@ TR_J9VMBase::getSystemClassLoader()
 bool
 TR_J9VMBase::acquireClassTableMutex()
    {
-   // Get VM access before acquiring the ClassTableMutex and keep it until after
-   // we release the ClassTableMutex
+   // The point here is really to get the CH table mutex and allow access to
+   // the persistent CH table. However, a critical section accessing the CH
+   // table in the JIT could potentially also:
+   // (a) try to acquire VM access, e.g. to load from an object; and/or
+   // (b) call into the VM to look up a class, which will take the VM's class
+   //     table mutex.
+   //
+   // To avoid deadlock, the order of acquisition is as follows:
+   // 1. VM access,
+   // 2. VM class table mutex, and finally
+   // 3. CH table mutex.
+   //
+   // 1 before 2 is the established order in the VM. 2 before 3 is necessary
+   // because the the VM class table mutex is held across the entire class load
+   // hook, which also needs to acquire the CH table mutex in order to add a
+   // new persistent class info to the CH table.
+   //
+   // Because we don't know which of these things the compiler might do while
+   // holding the CH table mutex, acquire all three now, and release all three
+   // at the end of the critical section.
+
    bool haveAcquiredVMAccess = acquireVMAccessIfNeeded();
-   jitAcquireClassTableMutex(vmThread());
+   TR::MonitorTable::acquireVMClassTableMutex();
+   TR::MonitorTable::acquireCHTableMutex();
    return haveAcquiredVMAccess;
    }
 
 void
 TR_J9VMBase::releaseClassTableMutex(bool releaseVMAccess)
    {
-   jitReleaseClassTableMutex(vmThread());
+   TR::MonitorTable::releaseCHTableMutex();
+   TR::MonitorTable::releaseVMClassTableMutex();
    releaseVMAccessIfNeeded(releaseVMAccess);
    }
 
@@ -9920,7 +9941,8 @@ void JNICALL Java_java_lang_invoke_MutableCallSite_invalidate
       bool alreadyHasVMAccess = (vmThread->publicFlags & J9_PUBLIC_FLAGS_VM_ACCESS);
       if (!alreadyHasVMAccess)
          vmThread->javaVM->internalVMFunctions->internalEnterVMFromJNI(vmThread);
-      jitAcquireClassTableMutex(vmThread);
+
+      TR::MonitorTable::acquireCHTableMutex();
 
       for (int32_t i=0; i < numSites; i++)
          {
@@ -9938,7 +9960,7 @@ void JNICALL Java_java_lang_invoke_MutableCallSite_invalidate
             }
          }
 
-      jitReleaseClassTableMutex(vmThread);
+      TR::MonitorTable::releaseCHTableMutex();
       if (!alreadyHasVMAccess)
          vmThread->javaVM->internalVMFunctions->internalExitVMToJNI(vmThread);
 

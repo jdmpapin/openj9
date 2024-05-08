@@ -61,10 +61,9 @@ public:
     *
     * It will be included in the result of later calls to getPermanentLoaders().
     *
-    * \param vmThread the J9VMThread of the current thread
     * \param loader the permanent class loader
     */
-   void addPermanentLoader(J9VMThread *vmThread, J9ClassLoader *loader);
+   void addPermanentLoader(J9ClassLoader *loader);
 
    /**
     * \brief Populate \p dest with the class loaders that are known to be permanent.
@@ -72,11 +71,9 @@ public:
     * The class loader pointers will be produced in the same order in which
     * they were added.
     *
-    * \param vmThread the J9VMThread of the current thread
     * \param[out] dest the resulting vector of class loader pointers
     */
-   void getPermanentLoaders(
-      J9VMThread *vmThread, TR::vector<J9ClassLoader*, TR::Region&> &dest) const;
+   void getPermanentLoaders(TR::vector<J9ClassLoader*, TR::Region&> &dest) const;
 
 private:
 
