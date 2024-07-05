@@ -2156,7 +2156,6 @@ void TR_ResolvedJ9Method::construct()
 
    static X DoubleMethods[] =
       {
-      {x(TR::java_lang_Double_doubleValue, "doubleValue", "()D")},
       {x(TR::java_lang_Double_longBitsToDouble, "longBitsToDouble", "(J)D")},
       {x(TR::java_lang_Double_doubleToLongBits, "doubleToLongBits", "(D)J")},
       {x(TR::java_lang_Double_doubleToRawLongBits, "doubleToRawLongBits", "(D)J")},
@@ -2166,7 +2165,6 @@ void TR_ResolvedJ9Method::construct()
 
    static X FloatMethods[] =
       {
-      {x(TR::java_lang_Float_floatValue, "floatValue", "()F")},
       {x(TR::java_lang_Float_intBitsToFloat, "intBitsToFloat", "(I)F")},
       {x(TR::java_lang_Float_floatToIntBits, "floatToIntBits", "(F)I")},
       {x(TR::java_lang_Float_floatToRawIntBits, "floatToRawIntBits", "(F)I")},
@@ -3361,7 +3359,6 @@ void TR_ResolvedJ9Method::construct()
 
    static X IntegerMethods[] =
       {
-      {x(TR::java_lang_Integer_intValue,                "intValue",              "()I")},
       {x(TR::java_lang_Integer_bitCount,                "bitCount",              "(I)I")},
       {x(TR::java_lang_Integer_highestOneBit,           "highestOneBit",         "(I)I")},
       {x(TR::java_lang_Integer_lowestOneBit,            "lowestOneBit",          "(I)I")},
@@ -3384,7 +3381,6 @@ void TR_ResolvedJ9Method::construct()
 
    static X LongMethods[] =
       {
-      {x(TR::java_lang_Long_longValue,                  "longValue",             "()J")},
       {x(TR::java_lang_Long_bitCount,                   "bitCount",              "(J)I")},
       {x(TR::java_lang_Long_highestOneBit,              "highestOneBit",         "(J)J")},
       {x(TR::java_lang_Long_lowestOneBit,               "lowestOneBit",          "(J)J")},
@@ -3406,7 +3402,6 @@ void TR_ResolvedJ9Method::construct()
    static X BooleanMethods[] =
       {
       {  TR::java_lang_Boolean_init,          6,    "<init>", (int16_t)-1,    "*"},
-      {x(TR::java_lang_Boolean_booleanValue,            "booleanValue",          "()Z")},
       {  TR::unknownMethod}
       };
 
@@ -3419,7 +3414,6 @@ void TR_ResolvedJ9Method::construct()
    static X CharacterMethods[] =
       {
       {  TR::java_lang_Character_init,          6,    "<init>", (int16_t)-1,    "*"},
-      {x(TR::java_lang_Character_charValue,           "charValue",            "()C")},
       {x(TR::java_lang_Character_isDigit,             "isDigit",              "(I)Z")},
       {x(TR::java_lang_Character_isLetter,            "isLetter",             "(I)Z")},
       {x(TR::java_lang_Character_isUpperCase,         "isUpperCase",          "(I)Z")},
@@ -3449,14 +3443,12 @@ void TR_ResolvedJ9Method::construct()
 
    static X ByteMethods[] =
       {
-      {x(TR::java_lang_Byte_byteValue, "byteValue", "()B")},
       {  TR::java_lang_Byte_init,          6,    "<init>", (int16_t)-1,    "*"},
       {  TR::unknownMethod}
       };
 
    static X ShortMethods[] =
       {
-      {x(TR::java_lang_Short_shortValue, "shortValue", "()S")},
       {x(TR::java_lang_Short_reverseBytes,             "reverseBytes",         "(S)S")},
       {  TR::java_lang_Short_init,          6,    "<init>", (int16_t)-1,    "*"},
       {  TR::unknownMethod}

@@ -161,16 +161,6 @@
    // properly alias the recognized constructor in TR::SymbolReferenceTable::immutableConstructorId. Otherwise
    // the JIT may consider the new constructor as side-effect free which will result in invalid transformations.
 
-   // Unboxing methods
-   java_lang_Boolean_booleanValue,
-   java_lang_Byte_byteValue,
-   java_lang_Character_charValue,
-   java_lang_Short_shortValue,
-   java_lang_Integer_intValue,
-   java_lang_Long_longValue,
-   java_lang_Float_floatValue,
-   java_lang_Double_doubleValue,
-
    java_lang_String_init_String_char,
    java_lang_String_init_String,
    java_lang_String_init_int_String_int_String_String,
