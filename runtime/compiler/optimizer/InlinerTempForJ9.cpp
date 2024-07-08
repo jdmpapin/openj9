@@ -335,6 +335,196 @@ TR_J9InlinerPolicy::mustBeInlinedEvenInDebug(TR_ResolvedMethod * calleeMethod, T
    return false;
    }
 
+static bool shouldForceInlineDueToIntrinsicCandidate(
+   TR::Compilation *comp, TR_ResolvedMethod *method, const char *callerName)
+   {
+   if (!comp->fej9()->isIntrinsicCandidate(method))
+      return false;
+
+   switch (auto rm = method->getRecognizedMethod())
+      {
+      case TR::unknownMethod:
+         if (comp->getOption(TR_DisableInliningUnrecognizedIntrinsics))
+            return false;
+
+         break;
+
+      // All recognized @IntrinsicCandidate methods must be handled explicitly.
+      // See the comment for the default case below.
+
+      // Recognized @IntrinsicCandidate methods that we should forcibly inline
+      // should go here. The case should do nothing so that we'll trace and
+      // return true after the switch.
+
+      // (none yet)
+
+      // Methods that we should not forcibly inline due to @IntrinsicCandidate
+      case TR::java_lang_Double_doubleToLongBits:
+      case TR::java_lang_Double_doubleToRawLongBits:
+      case TR::java_lang_Double_longBitsToDouble:
+      case TR::java_lang_Float_floatToIntBits:
+      case TR::java_lang_Float_floatToRawIntBits:
+      case TR::java_lang_Float_intBitsToFloat:
+      case TR::java_lang_Integer_bitCount:
+      case TR::java_lang_Integer_numberOfLeadingZeros:
+      case TR::java_lang_Integer_numberOfTrailingZeros:
+      case TR::java_lang_Integer_reverseBytes:
+      case TR::java_lang_Integer_toString:
+      case TR::java_lang_Integer_valueOf:
+      case TR::java_lang_invoke_MethodHandleImpl_isCompileConstant:
+      case TR::java_lang_invoke_MethodHandleImpl_profileBoolean:
+      case TR::java_lang_invoke_MethodHandle_invoke:
+      case TR::java_lang_invoke_MethodHandle_invokeBasic:
+      case TR::java_lang_invoke_MethodHandle_invokeExact:
+      case TR::java_lang_invoke_MethodHandle_linkToInterface:
+      case TR::java_lang_invoke_MethodHandle_linkToNative:
+      case TR::java_lang_invoke_MethodHandle_linkToSpecial:
+      case TR::java_lang_invoke_MethodHandle_linkToStatic:
+      case TR::java_lang_invoke_MethodHandle_linkToVirtual:
+      case TR::java_lang_Long_bitCount:
+      case TR::java_lang_Long_numberOfLeadingZeros:
+      case TR::java_lang_Long_numberOfTrailingZeros:
+      case TR::java_lang_Long_reverseBytes:
+      case TR::java_lang_Math_abs_D:
+      case TR::java_lang_Math_abs_F:
+      case TR::java_lang_Math_abs_I:
+      case TR::java_lang_Math_abs_L:
+      case TR::java_lang_Math_atan2:
+      case TR::java_lang_Math_ceil:
+      case TR::java_lang_Math_copySign_D:
+      case TR::java_lang_Math_copySign_F:
+      case TR::java_lang_Math_cos:
+      case TR::java_lang_Math_exp:
+      case TR::java_lang_Math_floor:
+      case TR::java_lang_Math_fma_D:
+      case TR::java_lang_Math_fma_F:
+      case TR::java_lang_Math_log:
+      case TR::java_lang_Math_log10:
+      case TR::java_lang_Math_max_D:
+      case TR::java_lang_Math_max_F:
+      case TR::java_lang_Math_max_I:
+      case TR::java_lang_Math_max_L:
+      case TR::java_lang_Math_min_D:
+      case TR::java_lang_Math_min_F:
+      case TR::java_lang_Math_min_I:
+      case TR::java_lang_Math_min_L:
+      case TR::java_lang_Math_multiplyHigh:
+      case TR::java_lang_Math_pow:
+      case TR::java_lang_Math_rint:
+      case TR::java_lang_Math_round_D:
+      case TR::java_lang_Math_round_F:
+      case TR::java_lang_Math_sin:
+      case TR::java_lang_Math_sqrt:
+      case TR::java_lang_Math_tan:
+      case TR::java_lang_reflect_Method_invoke:
+      case TR::java_lang_Short_reverseBytes:
+      case TR::java_lang_StrictMath_max_D:
+      case TR::java_lang_StrictMath_max_F:
+      case TR::java_lang_StrictMath_min_D:
+      case TR::java_lang_StrictMath_min_F:
+      case TR::java_lang_StrictMath_sqrt:
+      case TR::java_lang_String_init:
+      case TR::java_lang_String_init_String:
+      case TR::java_lang_StringBuilder_append_char:
+      case TR::java_lang_StringBuilder_append_int:
+      case TR::java_lang_StringBuilder_append_String:
+      case TR::java_lang_StringBuilder_init:
+      case TR::java_lang_StringBuilder_init_int:
+      case TR::java_lang_StringBuilder_toString:
+      case TR::java_lang_StringCoding_countPositives:
+      case TR::java_lang_StringCoding_hasNegatives:
+      case TR::java_lang_StringCoding_implEncodeAsciiArray:
+      case TR::java_lang_StringCoding_implEncodeISOArray:
+      case TR::java_lang_StringLatin1_indexOf:
+      case TR::java_lang_StringLatin1_indexOfChar:
+      case TR::java_lang_StringLatin1_inflate_BIBII:
+      case TR::java_lang_StringLatin1_inflate_BICII:
+      case TR::java_lang_StringUTF16_getChar:
+      case TR::java_lang_StringUTF16_getChars_ByteArray:
+      case TR::java_lang_StringUTF16_indexOf:
+      case TR::java_lang_StringUTF16_putChar:
+      case TR::java_lang_StringUTF16_toBytes:
+      case TR::java_lang_Thread_currentThread:
+      case TR::java_lang_Thread_onSpinWait:
+      case TR::java_util_Arrays_copyOf_Object2:
+      case TR::java_util_Arrays_copyOfRange_Object2:
+      case TR::java_util_Arrays_equals:
+      case TR::java_util_zip_CRC32C_updateBytes:
+      case TR::java_util_zip_CRC32C_updateDirectByteBuffer:
+      case TR::java_util_zip_CRC32_update:
+      case TR::java_util_zip_CRC32_updateByteBuffer0:
+      case TR::java_util_zip_CRC32_updateBytes0:
+      // NOTE: These unaligned accessors should generally be "inlined" (if they
+      // aren't first improved by unsafe fast path) because it's the inliner
+      // that transforms them, and it does so instead of inlining normally. But
+      // they're already considered alwaysWorthInlining() because they satisfy
+      // isInlineableJNI(), so the @IntrinsicCandidate annotation isn't needed
+      // for the purpose of forcing inlining.
+      case TR::jdk_internal_misc_Unsafe_getCharUnaligned:
+      case TR::jdk_internal_misc_Unsafe_getShortUnaligned:
+      case TR::jdk_internal_misc_Unsafe_getIntUnaligned:
+      case TR::jdk_internal_misc_Unsafe_getLongUnaligned:
+      case TR::jdk_internal_misc_Unsafe_putCharUnaligned:
+      case TR::jdk_internal_misc_Unsafe_putShortUnaligned:
+      case TR::jdk_internal_misc_Unsafe_putIntUnaligned:
+      case TR::jdk_internal_misc_Unsafe_putLongUnaligned:
+      case TR::jdk_internal_util_ArraysSupport_vectorizedHashCode:
+      case TR::jdk_internal_util_ArraysSupport_vectorizedMismatch:
+      case TR::jdk_internal_util_Preconditions_checkIndex:
+      case TR::jdk_internal_vm_vector_VectorSupport_binaryOp:
+      case TR::jdk_internal_vm_vector_VectorSupport_blend:
+      case TR::jdk_internal_vm_vector_VectorSupport_broadcastInt:
+      case TR::jdk_internal_vm_vector_VectorSupport_compare:
+      case TR::jdk_internal_vm_vector_VectorSupport_compressExpandOp:
+      case TR::jdk_internal_vm_vector_VectorSupport_convert:
+      case TR::jdk_internal_vm_vector_VectorSupport_fromBitsCoerced:
+      case TR::jdk_internal_vm_vector_VectorSupport_load:
+      case TR::jdk_internal_vm_vector_VectorSupport_maskReductionCoerced:
+      case TR::jdk_internal_vm_vector_VectorSupport_reductionCoerced:
+      case TR::jdk_internal_vm_vector_VectorSupport_store:
+      case TR::jdk_internal_vm_vector_VectorSupport_ternaryOp:
+      case TR::jdk_internal_vm_vector_VectorSupport_test:
+      case TR::jdk_internal_vm_vector_VectorSupport_unaryOp:
+      case TR::sun_reflect_Reflection_getCallerClass:
+      case TR::sun_reflect_Reflection_getClassAccessFlags:
+         return false;
+
+      default:
+         // Force-inlining only unrecognized @IntrinsicCandidate methods would
+         // mean that if an @IntrinsicCandidate is unrecognized now but becomes
+         // recognized later, it would no longer be force-inlined even if that
+         // would still be beneficial. Instead of silently preventing forced
+         // inlining in this way, newly recognized @IntrinsicCandidate methods
+         // will cause this assertion to fail, forcing us to consider and
+         // explicitly specify (in this switch) whether the forced inlining
+         // should continue for that method.
+         //
+         // NOTE: Pay attention to the enumerator value (%d). Sometimes a value
+         // can correspond to multiple methods, in which case the decision here
+         // of whether or not to force-inline will apply to all corresponding
+         // @IntrinsicCandidate methods. If some should be handled differently
+         // than others, then the enum and recognition logic should be updated
+         // to distinguish them.
+         //
+         TR_ASSERT_FATAL(
+            false,
+            "unexpected recognized @IntrinsicCandidate method %d: %s",
+            (int)rm,
+            method->signature(comp->trMemory()));
+
+         return false; // for any compiler that can't tell this is unreachable
+      }
+
+   logprintf(
+      comp->trace(OMR::inlining),
+      comp->log(),
+      "Force @IntrinsicCandidate %s, in %s\n",
+      method->signature(comp->trMemory()),
+      callerName);
+
+   return true;
+   }
+
 /**  Test for methods that we wish to inline whenever possible.
 
    Identify methods for which the benefits of inlining them into the caller
@@ -459,11 +649,8 @@ TR_J9InlinerPolicy::alwaysWorthInlining(TR_ResolvedMethod * calleeMethod, TR::No
       return true;
       }
 
-   if (calleeMethod->getRecognizedMethod() == TR::unknownMethod &&
-       comp()->fej9()->isIntrinsicCandidate(calleeMethod) &&
-       !comp()->getOption(TR_DisableInliningUnrecognizedIntrinsics))
+   if (shouldForceInlineDueToIntrinsicCandidate(comp(), calleeMethod, "alwaysWorthInlining"))
       {
-      logprintf(comp()->trace(OMR::inlining), comp()->log(), "@IntrinsicCandidate was specified for %s, in alwaysWorthInlining\n", calleeMethod->signature(comp()->trMemory()));
       return true;
       }
 
@@ -2919,11 +3106,8 @@ TR_J9InlinerPolicy::tryToInline(TR_CallTarget * calltarget, TR_CallStack * callS
          return true;
          }
 
-      if (method->getRecognizedMethod() == TR::unknownMethod &&
-          comp()->fej9()->isIntrinsicCandidate(method) &&
-          !comp()->getOption(TR_DisableInliningUnrecognizedIntrinsics))
+      if (shouldForceInlineDueToIntrinsicCandidate(comp(), method, "tryToInline"))
          {
-         logprintf(trace, log, "@IntrisicCandidate was specified for %s, in tryToInline\n", method->signature(comp()->trMemory()));
          return true;
          }
       }
@@ -3171,7 +3355,6 @@ TR_J9InlinerPolicy::adjustFanInSizeInExceedsSizeThreshold(int bytecodeSize,
    return false;
    }
 
-
 bool
 TR_J9InlinerPolicy::callMustBeInlinedInCold(TR_ResolvedMethod *method)
    {
@@ -3212,14 +3395,10 @@ TR_J9InlinerPolicy::callMustBeInlinedInCold(TR_ResolvedMethod *method)
          }
       }
 
-   if (method->getRecognizedMethod() == TR::unknownMethod &&
-       comp()->fej9()->isIntrinsicCandidate(method) &&
-       !comp()->getOption(TR_DisableInliningUnrecognizedIntrinsics))
+   if (shouldForceInlineDueToIntrinsicCandidate(comp(), method, "callMustBeInlined"))
       {
-      logprintf(trace, log, "@IntrinsicCandidate was specified for %s, in callMustBeInlined\n", method->signature(comp()->trMemory()));
       return true;
       }
-
 
    return false;
    }
