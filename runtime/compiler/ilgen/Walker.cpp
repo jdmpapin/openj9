@@ -1572,6 +1572,9 @@ TR_J9ByteCodeIlGenerator::isAtBBStart(int32_t bcIndex)
    {
    return blocks(bcIndex) && blocks(bcIndex)->getEntry()->getNode()->getByteCodeIndex() == bcIndex;
    }
+
+#include <unistd.h>
+
 /*
  * Stash the required number of arguments for the provided bytecode.
  * The current stack will be walked, determining pending push temps for
@@ -1618,10 +1621,25 @@ TR_J9ByteCodeIlGenerator::stashArgumentsForOSR(TR_J9ByteCode byteCode)
          break;
       case J9BCinvokedynamic:
          symRef = symRefTab()->findOrCreateDynamicMethodSymbol(_methodSymbol, next2Bytes(), &unresolvedInCP, &isInvokeCacheAppendixNull);
-         break;
+         // HACK fallthrough
       case J9BCinvokehandle:
       case J9BCinvokehandlegeneric:
-         symRef = symRefTab()->findOrCreateHandleMethodSymbol(_methodSymbol, next2Bytes(), &unresolvedInCP, &isInvokeCacheAppendixNull);
+         if (byteCode != J9BCinvokedynamic)
+            {
+            symRef = symRefTab()->findOrCreateHandleMethodSymbol(_methodSymbol, next2Bytes(), &unresolvedInCP, &isInvokeCacheAppendixNull);
+            }
+         if (unresolvedInCP) // HACK
+            {
+            static const char * const delayMsStr =
+               feGetEnv("TR_hackOSRStashArgsUnresolvedMHDelayMs");
+
+            if (delayMsStr != NULL)
+               {
+               int delayMs = atoi(delayMsStr);
+               if (delayMs > 0)
+                  usleep(1000 * delayMs);
+               }
+            }
          break;
       case J9BCinvokestaticsplit:
          symRef = symRefTab()->findOrCreateStaticMethodSymbol(_methodSymbol, next2Bytes() | J9_STATIC_SPLIT_TABLE_INDEX_FLAG);
