@@ -388,6 +388,8 @@ static const OptimizationStrategy warmStrategyOpts[] =
    { OMR::deadTreesElimination,                      OMR::IfVectorAPI                }, // cleanup after dead store removal
    { OMR::vectorAPIExpansion,                        OMR::IfVectorAPI                },
    { OMR::osrGuardRemoval,                           OMR::IfVectorAPI                },
+   // Vector API expansion may have left unused const ref loads. Remove them before const ref privatization.
+   { OMR::deadTreesElimination,                      OMR::IfVectorAPI                },
    { OMR::cheapTacticalGlobalRegisterAllocatorGroup, OMR::IfEnabled                  },
    { OMR::jProfilingValue,                           OMR::MustBeDone                 },
    { OMR::treeLowering,                              OMR::MustBeDone                 },
@@ -629,6 +631,7 @@ static const OptimizationStrategy jitProfilingOpts[] =
 static const OptimizationStrategy cheapTacticalGlobalRegisterAllocatorOpts[] =
    {
    { OMR::redundantGotoElimination,        OMR::IfNotJitProfiling }, // need to be run before global register allocator
+   { OMR::constRefPrivatization,           OMR::IfEnabled },
    { OMR::tacticalGlobalRegisterAllocator, OMR::IfEnabled },
    { OMR::endGroup                        }
    };
@@ -784,6 +787,10 @@ J9::Optimizer::Optimizer(TR::Compilation *comp, TR::ResolvedMethodSymbol *method
    self()->setRequestOptimization(OMR::tacticalGlobalRegisterAllocatorGroup, true);
 
    self()->setRequestOptimization(OMR::tacticalGlobalRegisterAllocator, true);
+   if (comp->useConstRefs())
+      {
+      self()->setRequestOptimization(OMR::constRefPrivatization, true);
+      }
 
    if (shouldEnableSEL(comp))
      self()->setRequestOptimization(OMR::signExtendLoadsGroup, true);
