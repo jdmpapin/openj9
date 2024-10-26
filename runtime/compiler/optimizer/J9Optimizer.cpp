@@ -633,6 +633,7 @@ static const OptimizationStrategy cheapTacticalGlobalRegisterAllocatorOpts[] =
    { OMR::redundantGotoElimination,        OMR::IfNotJitProfiling }, // need to be run before global register allocator
    { OMR::constRefPrivatization,           OMR::IfEnabled },
    { OMR::tacticalGlobalRegisterAllocator, OMR::IfEnabled },
+   { OMR::constRefRematerialization,       OMR::IfEnabled },
    { OMR::endGroup                        }
    };
 
@@ -790,6 +791,7 @@ J9::Optimizer::Optimizer(TR::Compilation *comp, TR::ResolvedMethodSymbol *method
    if (comp->useConstRefs())
       {
       self()->setRequestOptimization(OMR::constRefPrivatization, true);
+      self()->setRequestOptimization(OMR::constRefRematerialization, true);
       }
 
    if (shouldEnableSEL(comp))
