@@ -225,6 +225,10 @@ SymbolReference::getTypeSignature(int32_t & len, TR_AllocationKind allocKind, bo
       case TR::Symbol::IsStatic:
            if (_symbol->isStatic() && _symbol->isFinal() && !self()->isUnresolved())
                {
+               // FIXME: using classOfStatic and classInfo to inspect the
+               // actual value of the static final field and produce a
+               // signature based on its actual runtime type is not OK in AOT
+               // (at least without additional validation).
                TR::StaticSymbol * symbol = _symbol->castToStaticSymbol();
                TR::DataType type = symbol->getDataType();
                TR_OpaqueClassBlock * classOfStatic = self()->getOwningMethod(comp)->classOfStatic(_cpIndex, allowForAOT);
