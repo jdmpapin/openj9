@@ -8702,7 +8702,11 @@ TR::CompilationInfoPerThreadBase::wrappedCompile(J9PortLibrary *portLib, void * 
             // Client will get the log files from server.
             if (that->_methodBeingCompiled->isRemoteCompReq())
                {
-               TR::Options::suppressLogFileBecauseDebugObjectNotCreated();
+               static const bool allowLog = feGetEnv("TR_jitClientAllowLog") != NULL;
+               if (!allowLog)
+                  {
+                  TR::Options::suppressLogFileBecauseDebugObjectNotCreated();
+                  }
                }
             TR_ASSERT(!that->_methodBeingCompiled->isOutOfProcessCompReq(), "JITServer should not change options passed by client");
 #endif /* defined(J9VM_OPT_JITSERVER) */
