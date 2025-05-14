@@ -55,6 +55,11 @@
 #include "il/AutomaticSymbol.hpp"
 #include "ras/Logger.hpp"
 
+#ifdef TR_INLINE_LINKTONATIVE_MH
+#include "env/VMAccessCriticalSection.hpp"
+#include "env/JSR292Methods.h"
+#endif
+
 static void printObjectInfo(TR_MethodHandleTransformer::ObjectInfo *objectInfo, TR::Compilation *comp)
    {
    OMR::Logger *log = comp->log();
@@ -596,6 +601,11 @@ void TR_MethodHandleTransformer::visitCall(TR::TreeTop* tt, TR::Node* node)
       case TR::java_lang_invoke_Invokers_checkVarHandleGenericType:
          process_java_lang_invoke_Invokers_checkVarHandleGenericType(tt, node);
          break;
+#ifdef TR_INLINE_LINKTONATIVE_MH
+      case TR::java_lang_invoke_MethodHandle_linkToNative:
+         process_java_lang_invoke_MethodHandle_linkToNative(tt, node);
+         break;
+#endif
 
       default:
          break;
@@ -806,6 +816,98 @@ TR_MethodHandleTransformer::process_java_lang_invoke_Invokers_checkExactType(TR:
    tt->insertBefore(TR::TreeTop::create(comp(), zerochkNode));
    TR::TransformUtil::transformCallNodeToPassThrough(this, node, tt, node->getFirstArgument());
    }
+
+#ifdef TR_INLINE_LINKTONATIVE_MH
+void
+TR_MethodHandleTransformer::process_java_lang_invoke_MethodHandle_linkToNative(
+   TR::TreeTop *tt, TR::Node *node)
+   {
+   // Just avoid the J2I transition and call the method handle. If we do this,
+   // we'll end up at a J2I transition eventually anyway, because the method
+   // handle works in terms of InternalDowncallHandler.invokeNative(), which is
+   // implemented by inlInternalDowncallHandlerInvokeNative() in the interpreter.
+
+   TR::KnownObjectTable *knot = comp()->getKnownObjectTable();
+   TR::Node *nativeMH = node->getChild(node->getNumChildren() - 1);
+   auto nativeMhKoi = nativeMH->getSymbolReference()->getKnownObjectIndex();
+   if (knot == NULL
+       || knot->isNull(nativeMhKoi)
+       || nativeMhKoi == TR::KnownObjectTable::UNKNOWN)
+      {
+      return;
+      }
+
+   traceMsg(comp(), "jdmp nativeMhKoi=obj%d\n", nativeMhKoi);
+
+   TR::VMAccessCriticalSection cs(comp());
+
+   TR_J9VMBase *fej9 = comp()->fej9();
+   uintptr_t nativeMHAddr = knot->getPointer(nativeMhKoi);
+   uintptr_t nepObjectAddr = fej9->getReferenceField(
+      nativeMHAddr, "nep", "Ljava/lang/invoke/MethodHandle;");
+
+   uintptr_t invokeCacheArrayAddr = fej9->getReferenceField(
+      nativeMHAddr, "invokeCache", "[Ljava/lang/Object;");
+
+   uintptr_t ahSize = TR::Compiler->om.contiguousArrayHeaderSizeInBytes();
+   uintptr_t elemSize = TR::Compiler->om.sizeofReferenceField();
+   uintptr_t memberNameAddr = fej9->getReferenceFieldAtAddress(
+      invokeCacheArrayAddr + ahSize + JSR292_invokeCacheArrayMemberNameIndex * elemSize);
+
+   uintptr_t appendixAddr = fej9->getReferenceFieldAtAddress(
+      invokeCacheArrayAddr + ahSize + JSR292_invokeCacheArrayAppendixIndex * elemSize);
+
+   auto nepObject = knot->getOrCreateIndex(nepObjectAddr);
+   auto memberName = knot->getOrCreateIndex(memberNameAddr);
+   auto appendix = knot->getOrCreateIndex(appendixAddr);
+
+   // TODO: add provenance edge: nativeMhKoi -> nepObject
+   // TODO: add provenance edge: nativeMhKoi -> memberName
+   // TODO: add provenance edge: nativeMhKoi -> appendix
+
+   TR_J9VMBase::MemberNameMethodInfo info = {};
+   if (!fej9->getMemberNameMethodInfo(comp(), memberName, &info))
+      {
+      return;
+      }
+
+   if (info.vmtarget == NULL)
+      {
+      return;
+      }
+
+   uint32_t vTableSlot = 0;
+   TR::SymbolReference *symRef = node->getSymbolReference();
+   auto resolvedMethod = fej9->createResolvedMethodWithVTableSlot(
+      comp()->trMemory(), vTableSlot, info.vmtarget, symRef->getOwningMethod(comp()));
+
+   TR::SymbolReference *newSymRef = comp()->getSymRefTab()->findOrCreateMethodSymbol(
+      symRef->getOwningMethodIndex(),
+      -1,
+      resolvedMethod,
+      TR::MethodSymbol::Static);
+
+   node->setSymbolReference(newSymRef);
+
+   // fix the arguments
+   tt->insertBefore(
+      TR::TreeTop::create(
+         comp(),
+         TR::Node::create(node, TR::treetop, 1, nativeMH)));
+
+   nativeMH->recursivelyDecReferenceCount(); // removing from node
+
+   for (int32_t i = node->getNumChildren() - 1; i > 0; i--)
+      {
+      node->setChild(i, node->getChild(i - 1));
+      }
+
+   node->setAndIncChild(0, TR::Node::createLoad(node, knot->constSymRef(nepObject)));
+
+   TR::Node *appendixNode = TR::Node::createLoad(node, knot->constSymRef(appendix));
+   node->addChildren(&appendixNode, 1);
+   }
+#endif
 
 /*
 java/lang/invoke/Invokers.checkCustomized is redundant if its argument is a known object. This transformation
