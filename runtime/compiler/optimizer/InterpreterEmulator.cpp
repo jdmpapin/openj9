@@ -1114,6 +1114,19 @@ InterpreterEmulator::getReturnValue(TR_ResolvedMethod *callee)
             }
          break;
          }
+#ifdef TR_INLINE_LINKTONATIVE_MH
+      case TR::java_lang_invoke_NativeMethodHandle_internalNativeEntryPoint:
+         {
+         Operand *mh = top();
+         TR::KnownObjectTable::Index mhIndex = top()->getKnownObjectIndex();
+         TR::KnownObjectTable *knot = comp()->getKnownObjectTable();
+         if (knot && mhIndex != TR::KnownObjectTable::UNKNOWN)
+            {
+            result = knownObjOperand(mhIndex);
+            }
+         break;
+         }
+#endif
       case TR::java_lang_invoke_DirectMethodHandle_constructorMethod:
          {
          Operand* mh = top();
@@ -1303,6 +1316,94 @@ InterpreterEmulator::refineResolvedCalleeForInvokestatic(
          pop();
          return;
          }
+
+#ifdef TR_INLINE_LINKTONATIVE_MH
+      case TR::java_lang_invoke_MethodHandle_linkToNative:
+         {
+         TR::KnownObjectTable *knot = comp()->getKnownObjectTable();
+         TR::KnownObjectTable::Index nativeMH = top()->getKnownObjectIndex();
+         if (knot == NULL
+             || knot->isNull(nativeMH)
+             || nativeMH == TR::KnownObjectTable::UNKNOWN)
+            {
+            return;
+            }
+
+         traceMsg(comp(), "jdmp nativeMH=obj%d\n", nativeMH);
+
+         TR::VMAccessCriticalSection cs(comp());
+
+         TR_J9VMBase *fej9 = comp()->fej9();
+         uintptr_t nativeMHAddr = knot->getPointer(nativeMH);
+         uintptr_t nepObjectAddr = fej9->getReferenceField(
+            nativeMHAddr, "nep", "Ljava/lang/invoke/MethodHandle;");
+
+         uintptr_t invokeCacheArrayAddr = fej9->getReferenceField(
+            nativeMHAddr, "invokeCache", "[Ljava/lang/Object;");
+
+         uintptr_t ahSize = TR::Compiler->om.contiguousArrayHeaderSizeInBytes();
+         uintptr_t elemSize = TR::Compiler->om.sizeofReferenceField();
+         uintptr_t memberNameAddr = fej9->getReferenceFieldAtAddress(
+            invokeCacheArrayAddr + ahSize + JSR292_invokeCacheArrayMemberNameIndex * elemSize);
+
+         uintptr_t appendixAddr = fej9->getReferenceFieldAtAddress(
+            invokeCacheArrayAddr + ahSize + JSR292_invokeCacheArrayAppendixIndex * elemSize);
+
+         auto nepObject = knot->getOrCreateIndex(nepObjectAddr);
+         auto memberName = knot->getOrCreateIndex(memberNameAddr);
+         auto appendix = knot->getOrCreateIndex(appendixAddr);
+
+         // TODO: add const provenance edge: nativeMH -> nepObject
+         // TODO: add const provenance edge: nativeMH -> memberName
+         // TODO: add const provenance edge: nativeMH -> appendix
+
+         TR_J9VMBase::MemberNameMethodInfo info = {};
+         if (!fej9->getMemberNameMethodInfo(comp(), memberName, &info))
+            {
+            debugTrace(tracer(), "jdmp no MemberName method info");
+            return;
+            }
+
+         if (info.vmtarget == NULL)
+            {
+            debugTrace(tracer(), "jdmp no vmtarget");
+            return;
+            }
+
+         uint32_t vTableSlot = 0;
+         callee = fej9->createResolvedMethodWithVTableSlot(comp()->trMemory(), vTableSlot, info.vmtarget, _calltarget->_calleeMethod);
+         receiverClass = info.clazz;
+         isIndirectCall = vTableSlot != 0;
+
+         // fix the stack
+         debugTrace(tracer(), "      jdmp operand stack before : ");
+         dumpStack();
+
+         pop(); // pop nativeMH
+
+         TR::vector<Operand*, TR::Region&> tmpStack(comp()->trMemory()->currentStackRegion());
+         tmpStack.reserve(_stack->size());
+         while (!_stack->isEmpty())
+            {
+            tmpStack.push_back(pop());
+            }
+
+         push(knownObjOperand(nepObject));
+
+         while (!tmpStack.empty())
+            {
+            push(tmpStack.back());
+            tmpStack.pop_back();
+            }
+
+         push(knownObjOperand(appendix));
+
+         debugTrace(tracer(), "      jdmp operand stack after : ");
+         dumpStack();
+
+         return;
+         }
+#endif // TR_INLINE_LINKTONATIVE_MH
 #endif //J9VM_OPT_OPENJDK_METHODHANDLE
 
       default:
