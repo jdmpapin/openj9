@@ -32,6 +32,7 @@
 #include "control/Options_inlines.hpp"
 #include "env/CompilerEnv.hpp"
 #include "env/IO.hpp"
+#include "env/VMAccessCriticalSection.hpp"
 #include "env/VMJ9.h"
 #include "env/j9method.h"
 #include "il/ILOpCodes.hpp"
@@ -46,6 +47,7 @@
 #include "il/TreeTop_inlines.hpp"
 #include "infra/Assert.hpp"
 #include "infra/Checklist.hpp"
+#include "infra/String.hpp"
 #include "optimizer/Optimization.hpp"
 #include "optimizer/Optimization_inlines.hpp"
 #include "optimizer/TransformUtil.hpp"
@@ -568,6 +570,9 @@ void TR_MethodHandleTransformer::visitCall(TR::TreeTop* tt, TR::Node* node)
       case TR::java_lang_invoke_MethodHandle_linkToStatic:
          process_java_lang_invoke_MethodHandle_linkTo(tt, node);
          break;
+      case TR::java_lang_invoke_MethodHandle_linkToNative:
+         process_java_lang_invoke_MethodHandle_linkToNative(tt, node);
+         break;
       case TR::java_lang_invoke_Invokers_checkCustomized:
          process_java_lang_invoke_Invokers_checkCustomized(tt, node);
          break;
@@ -708,6 +713,173 @@ TR_MethodHandleTransformer::process_java_lang_invoke_MethodHandle_linkTo(TR::Tre
                                                                                comp()->getHotnessName(comp()->getMethodHotness())),
                                                                                tt);
       }
+   }
+
+void
+TR_MethodHandleTransformer::process_java_lang_invoke_MethodHandle_linkToNative(
+   TR::TreeTop *tt, TR::Node *node)
+   {
+   OMR::Logger *log = comp()->log();
+   bool jdmpTrace = trace() || comp()->getOptions()->getAnyOption(TR_TraceAll);
+
+   // linkToNative arguments:
+   // - native function entry point as MemorySegment
+   // - ??? some object
+   // - native function arguments
+   // - NativeMethodHandle
+   TR::KnownObjectTable *knot = comp()->getKnownObjectTable();
+   TR::Node *funcMemSegNode = node->getChild(0);
+   auto funcMemSegKoi = getObjectInfoOfNode(funcMemSegNode);
+   if (knot == NULL
+       || knot->isNull(funcMemSegKoi)
+       || funcMemSegKoi == TR::KnownObjectTable::UNKNOWN)
+      {
+      return; // unknown native function
+      }
+
+   logprintf(jdmpTrace, log, "jdmp funcMemSegKoi=obj%d\n", funcMemSegKoi);
+
+   TR_J9VMBase *fej9 = comp()->fej9();
+
+   TR::VMAccessCriticalSection cs(comp());
+
+   uintptr_t funcMemSegAddr = knot->getPointer(funcMemSegKoi);
+   TR_OpaqueClassBlock *funcMemSegClass = fej9->getObjectClass(funcMemSegAddr);
+   TR_OpaqueClassBlock *nativeMemorySegmentImpl = fej9->getSystemClassFromClassName(
+      "jdk/internal/foreign/NativeMemorySegmentImpl", 44);
+
+   if (funcMemSegClass != nativeMemorySegmentImpl)
+      {
+      return;
+      }
+
+   uint64_t funcAddr = fej9->getInt64Field(funcMemSegAddr, "min");
+   if (funcAddr == 0)
+      {
+      return;
+      }
+
+   logprintf(jdmpTrace, log, "jdmp funcAddr=0x%llx\n", (unsigned long long)funcAddr);
+
+   uint32_t vTableSlot = 0;
+   TR::SymbolReference *origSymRef = node->getSymbolReference();
+   TR::ResolvedMethodSymbol *origMethodSym =
+      origSymRef->getSymbol()->castToResolvedMethodSymbol();
+
+   auto linkToNative = (TR_OpaqueMethodBlock*)origMethodSym->getMethodAddress();
+
+   logprintf(
+      jdmpTrace, log,
+      "jdmp linkToNative=0x%llx\n",
+      (unsigned long long)(uintptr_t)linkToNative);
+
+   TR_ResolvedMethod *origResolvedMethod = origMethodSym->getResolvedMethod();
+   const char *origSig = origResolvedMethod->signatureChars();
+   int32_t origSigLen = origResolvedMethod->signatureLength();
+
+   logprintf(jdmpTrace, log, "jdmp origSig: %.*s\n", origSigLen, origSig);
+
+   // ok to use stack memory, signature will be copied
+   TR::Region &stackRegion = comp()->trMemory()->currentStackRegion();
+   char sigBufMem[256];
+   TR::StringBuf sigBuf(stackRegion, sigBufMem, sizeof(sigBufMem));
+
+   const char *expectedSigPrefix = "(Ljava/lang/Object;Ljava/lang/Object;";
+   size_t expectedSigPrefixLen = strlen(expectedSigPrefix);
+   if (strncmp(origSig, expectedSigPrefix, expectedSigPrefixLen))
+      {
+      return; // unexpected signature
+      }
+
+   sigBuf.appendf("(");
+   const char *cursor = origSig + expectedSigPrefixLen; // skip open parenthesis
+   while (true)
+      {
+      if (*cursor == ')')
+         {
+         return; // missing expected final object parameter
+         }
+
+      if (*cursor == '[')
+         {
+         return; // unexpected array type
+         }
+
+      if (*cursor == 'L')
+         {
+         const char *expectedLastParam = "Ljava/lang/Object;)";
+         size_t expectedLastParamLen = strlen(expectedLastParam);
+         if (strncmp(cursor, expectedLastParam, expectedLastParamLen))
+            {
+            return; // unexpected reference parameter
+            }
+
+         cursor += expectedLastParamLen;
+         break;
+         }
+
+      // primitive
+      sigBuf.appendf("%c", *cursor++);
+      }
+
+   // return type
+   if (*cursor == '[' || *cursor == 'L')
+      {
+      return; // unexpected reference return type
+      }
+
+   sigBuf.appendf(")%c", *cursor);
+
+   logprintf(jdmpTrace, log, "jdmp new sig: %s\n", sigBuf.text());
+
+   // TODO: check the actual type info from the NativeMethodHandle? We can get
+   // from that to the InternalDowncallHandler *somehow*, and it has a
+   // description of the function signature. Then we can really be sure it
+   // involves only primitives. But maybe any structs would be reference types
+   // at this point anyway...
+
+   auto resolvedMethod = fej9->createResolvedMethodWithSignature(
+      comp()->trMemory(),
+      linkToNative,
+      NULL, // classForNewInstance
+      (char*)sigBuf.text(),
+      (int32_t)sigBuf.len(),
+      origSymRef->getOwningMethod(comp()),
+      vTableSlot);
+
+   auto resolvedJ9Method = (TR_ResolvedJ9Method*)resolvedMethod;
+   resolvedJ9Method->setLinkToNativeJNITargetAddress((void*)funcAddr);
+
+   TR::SymbolReference *newSymRef = comp()->getSymRefTab()->findOrCreateMethodSymbol(
+      origSymRef->getOwningMethodIndex(), -1, resolvedMethod, TR::MethodSymbol::Static);
+
+   node->setSymbolReference(newSymRef);
+
+   // fix the arguments
+   TR::Node *arg1 = node->getChild(1); // TODO: what is this???
+   TR::Node *nativeMH = node->getChild(node->getNumChildren() - 1);
+   tt->insertBefore(
+      TR::TreeTop::create(comp(), TR::Node::create(node, TR::treetop, 1, funcMemSegNode)));
+   tt->insertBefore(
+      TR::TreeTop::create(comp(), TR::Node::create(node, TR::treetop, 1, arg1)));
+   tt->insertBefore(
+      TR::TreeTop::create(comp(), TR::Node::create(node, TR::treetop, 1, nativeMH)));
+
+   funcMemSegNode->recursivelyDecReferenceCount();
+   arg1->recursivelyDecReferenceCount();
+   nativeMH->recursivelyDecReferenceCount();
+
+   int32_t newNumChildren = node->getNumChildren() - 3; // had 3 extra args
+   for (int i = 0; i < newNumChildren; i++)
+      {
+      node->setChild(i, node->getChild(i + 2));
+      }
+
+   node->setChild(newNumChildren, NULL);
+   node->setChild(newNumChildren + 1, NULL);
+   node->setChild(newNumChildren + 2, NULL);
+   node->setNumChildren(newNumChildren);
+   node->setPreparedForDirectJNI();
    }
 
 /*

@@ -133,6 +133,8 @@ class TR_MethodHandleTransformer : public TR::Optimization
    //
    void process_java_lang_invoke_MethodHandle_linkTo(TR::TreeTop* tt, TR::Node* node);
 
+   void process_java_lang_invoke_MethodHandle_linkToNative(TR::TreeTop *tt, TR::Node *node);
+
    /** \brief
     *    Transforms calls to java/lang/invoke/Invokers.checkExactType to ZEROCHK, or eliminated
     *    entirely if the check can be performed at compile time
