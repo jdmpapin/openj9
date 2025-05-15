@@ -499,6 +499,9 @@ public:
    uintptr_t                       getJNIProperties() { return _jniProperties; }
    void *                          getJNITargetAddress() {return _jniTargetAddress; }
 
+   void                            setLinkToNativeJNITargetAddress(void *p) { _linkToNativeJniTargetAddress = p; }
+   void *                          getLinkToNativeJNITargetAddress() { return _linkToNativeJniTargetAddress; }
+
    virtual TR_OpaqueMethodBlock *  getNonPersistentIdentifier();
    virtual TR_OpaqueMethodBlock *  getPersistentIdentifier();
    virtual uint8_t *               allocateException(uint32_t, TR::Compilation*);
@@ -563,6 +566,7 @@ protected:
    J9Class *                       _j9classForNewInstance;
    uintptr_t                      _jniProperties;
    void *                          _jniTargetAddress;
+   void *                          _linkToNativeJniTargetAddress;
    int32_t                         _pendingPushSlots;
    };
 
