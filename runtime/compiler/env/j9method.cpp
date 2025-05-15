@@ -3719,6 +3719,12 @@ void TR_ResolvedJ9Method::construct()
       {  TR::unknownMethod}
       };
 
+   static X NativeMethodHandleMethods[] =
+      {
+      {x(TR::java_lang_invoke_NativeMethodHandle_internalNativeEntryPoint,      "internalNativeEntryPoint",           "(Ljava/lang/Object;)Ljava/lang/Object;")},
+      {  TR::unknownMethod}
+      };
+
    static X PrimitiveHandleMethods[] =
       {
       {x(TR::java_lang_invoke_PrimitiveHandle_initializeClassIfRequired,  "initializeClassIfRequired",       "()V")},
@@ -4350,6 +4356,7 @@ void TR_ResolvedJ9Method::construct()
       { "jdk/internal/loader/NativeLibraries", NativeLibrariesMethods },
 #endif /* JAVA_SPEC_VERSION >= 15 */
       { "java/lang/invoke/DirectMethodHandle", DirectMethodHandleMethods },
+      { "java/lang/invoke/NativeMethodHandle", NativeMethodHandleMethods },
       { 0 }
       };
 
