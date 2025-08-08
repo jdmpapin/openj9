@@ -41,6 +41,31 @@ private:
    bool _retryConnectionImmediately;
    };
 
+class BadHelloFromClient : public virtual std::exception
+   {
+public:
+   BadHelloFromClient(const std::string &clientIpAddr)
+      : _clientIpAddr(clientIpAddr)
+      {
+      _message += "bad hello from client ";
+      _message += clientIpAddr;
+      }
+
+   virtual const char *what() const throw()
+      {
+      return _message.c_str();
+      }
+
+   const char *clientIpAddr() const throw()
+      {
+      return _clientIpAddr.c_str();
+      }
+
+private:
+   std::string _clientIpAddr;
+   std::string _message;
+   };
+
 class StreamInterrupted: public virtual std::exception
    {
 public:

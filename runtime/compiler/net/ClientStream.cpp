@@ -37,6 +37,8 @@
 #include <unistd.h> /// gethostname, read, write
 #include <openssl/err.h>
 
+#include "infra/String.hpp"
+
 namespace JITServer
 {
 int ClientStream::_numConnectionsOpened = 0;
@@ -286,11 +288,188 @@ openSSLConnection(SSL_CTX *ctx, int connfd)
    }
 
 ClientStream::ClientStream(TR::PersistentInfo *info)
-   : CommunicationStream(), _versionCheckStatus(NOT_DONE)
+   : CommunicationStream(), _compatibilityCheckDone(false), _serverIsCompatible(false)
    {
    int connfd = openConnection(info->getJITServerAddress(), info->getJITServerPort(), info->getSocketTimeout());
    BIO *ssl = openSSLConnection(_sslCtx, connfd);
    initStream(connfd, ssl);
    _numConnectionsOpened++;
    }
-};
+
+void
+ClientStream::checkCompatibilityWithServerImpl()
+   {
+   _compatibilityCheckDone = true;
+
+   char buildId[1024];
+   CommunicationStream::getJITServerBuildId(buildId, sizeof(buildId));
+
+   char buf[1024]; // big enough...
+   ByteBufWriter w(buf, sizeof(buf));
+
+   // Start with the back-compat mock compilationRequest message. If we're
+   // connecting to a pre-hello server, it will respond with compilationFailure
+   // with reason compilationStreamVersionIncompatible. If we're connecting to a
+   // newer server, it will expect to see the hello following this, and it will
+   // respond the same way it would if the hello were sent at the beginning.
+   //
+   // NOTE: Because this is meant to be (minimally) compatible with older
+   // servers, which determined compatibility based on data embedded in the
+   // usual message serialization scheme, the data here needs to be in native-
+   // endian (for the client). If we try to connect to a pre-hello server with
+   // opposite endianness, then we'll get a general stream error instead of a
+   // clean incompatible version message, but that's also what would have
+   // happened if a pre-hello client connected to an opposite-endian pre-hello
+   // server, and there isn't much we can do about it.
+   //
+   // Eventually, when there is little enough risk of attempting to connect to a
+   // pre-hello server, this back-compat mock compilation request message can be
+   // eliminated.
+   //
+   ByteBufWriter backCompatCompReqLenWriter = w; // to fix the length at the end
+   w.writeU32NE(0); // message length
+   w.writeU32NE(backCompatEncodeVersion(2, 0));
+
+   uint32_t oldConfigFlags = JAVA_SPEC_VERSION & BackCompatJITServerJavaVersionMask;
+   if (TR::Options::useCompressedPointers())
+      {
+      oldConfigFlags |= BackCompatJITServerCompressedRef;
+      }
+
+   // NOTE: 8 was the most recent value of MessageType::compilationRequest at
+   // the time the new handshake was established. Over time the value has
+   // changed, so it's not possible to send a value that will be interpreted as
+   // compilationRequest by all old servers. However, the server should check
+   // for version compatibility before it checks for the expected message type.
+   w.writeU32NE(oldConfigFlags);
+   w.writeU16NE(8); // compilationRequest
+   w.writeU16NE(0); // number of values sent with the message
+
+   // Now that the back-compat part has been buffered, add the hello.
+   w._cursor += TR::snprintfNoTrunc(w._cursor, w.remaining(), "OpenJ9/JITServer");
+
+   HandshakeCompressedRefs compressedRefs = TR::Options::useCompressedPointers()
+      ? HandshakeCompressedRefs_Enabled
+      : HandshakeCompressedRefs_Disabled;
+
+   w.writeU32BE(JAVA_SPEC_VERSION);
+   w.writeU32BE(CommunicationStream::getJITServerCpuArch());
+   w.writeU32BE(CommunicationStream::getJITServerOs());
+   w.writeU8(compressedRefs);
+
+   ByteBufWriter versionDataLengthWriter = w; // to fix the length at the end
+   w.writeU16BE(0);
+
+   char *versionDataStart = w._cursor; // to calculate the length at the end
+
+   // This client only supports version zero with the particular build ID of
+   // whatever build is running.
+
+   w.writeU16BE(1); // server only gets to choose from one option
+
+   // Write out protocol version option zero.
+   w.writeU32BE(0); // protocol version zero
+   w.writeU16BE(strlen(buildId));
+   w._cursor += TR::snprintfNoTrunc(w._cursor, w.remaining(), "%s", buildId);
+
+   // Fix the version option data length.
+   versionDataLengthWriter.writeU16BE(w._cursor - versionDataStart);
+
+   // Fix the length field of the back-compat compilationRequest message.
+   // It can't just be 16 bytes because older servers (and, at time of writing,
+   // current servers) receiving a normal message will hang up if they receive
+   // more data than the length field specifies. So even though the back-compat
+   // part of the message specifies zero additional values, set the length to
+   // the full length of the data that we're sending.
+   backCompatCompReqLenWriter.writeU32NE(w._cursor - buf);
+
+   // Send the hello and handshake info to the server. Done with buf now.
+   writeBlocking(buf, w._cursor - buf);
+
+   // Reuse buf for the response.
+   readBlocking(buf, 1);
+   if (buf[0] == (char)HandshakeResponseCode_OK)
+      {
+      // Get the selected option.
+      readBlocking(buf, 2);
+      uint16_t selectedOptionIndex = ByteBufReader(buf, 2).readU16BE();
+
+      // The selected option must be option 0, since there was only one of them.
+      if (selectedOptionIndex == 0)
+         {
+         _serverIsCompatible = true;
+         return; // OK!
+         }
+      else
+         {
+         throw JITServer::StreamFailure(
+            "server selected nonexistent protocol version option");
+         }
+      }
+   else if (buf[0] == (char)HandshakeResponseCode_Incompatible)
+      {
+      // Get the length of the error message.
+      readBlocking(buf, 2);
+      uint16_t msgLen = ByteBufReader(buf, 2).readU16BE();
+
+      // Get the error message.
+      std::vector<char> msg(msgLen + 1, '\0');
+      readBlocking(&msg[0], msgLen);
+      throw JITServer::StreamVersionIncompatible(&msg[0]);
+      }
+   else
+      {
+      if (buf[0] % 4 == 0)
+         {
+         // Pre-hello servers respond with a message in their usual serialization
+         // format. The first 4 bytes are an unsigned 32-bit length in native
+         // endian. (Server native endian to be specific, but if there hasn't been
+         // a general stream error then that matches client native endian.) For
+         // little-endian, the first byte is the low byte, which will be a multiple
+         // of 4 due to padding. For big-endian, the first byte is the high byte,
+         // which should be zero, which is also a multiple of 4. The handshake
+         // response codes avoid multiples of 4 to ensure that they can be
+         // distinguished from the response of a pre-hello server.
+         readBlocking(&buf[1], 15); // read the rest of the message metadata
+
+         ByteBufReader r(buf, 16);
+         uint32_t responseLen = r.readU32NE();
+         uint32_t serverStreamVersion = r.readU32NE();
+         uint32_t serverConfig = r.readU32NE();
+         uint16_t responseMsgType = r.readU16NE();
+         uint16_t responseNumValues = r.readU16NE();
+
+         // compilationStreamVersionIncompatible messages have the stream version
+         // set to zero. Maybe this was the case for all messages sent from the
+         // server to the client?
+         if (responseLen >= 16
+             && serverStreamVersion == 0
+             && responseMsgType == BackCompatMessageType_compilationFailure
+             && responseNumValues == 2)
+            {
+            // Any reason whatsoever means that the stream version is incompatible,
+            // so we don't have to decode the compilation error code.
+            throw JITServer::StreamVersionIncompatible(
+               "server must be from the same OpenJ9 JVM build");
+            }
+         }
+
+      throw JITServer::StreamVersionIncompatible(
+         "server sent an unrecognized handshake response");
+      }
+   }
+
+void
+ClientStream::checkCompatibilityWithServerIgnoringErrors()
+   {
+   try
+      {
+      checkCompatibilityWithServer();
+      }
+   catch (...)
+      {
+      return;
+      }
+   }
+
+}

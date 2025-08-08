@@ -285,6 +285,14 @@ public:
       return (_pClientSessionData) ? _pClientSessionData->isClassUnloadingAttempted() : false;
       }
 
+   void checkCompatibilityWithClient()
+      {
+      if (OMR_UNLIKELY(!_compatibilityCheckDone))
+         {
+         checkCompatibilityWithClientImpl();
+         }
+      }
+
    // Statistics
    static int getNumConnectionsOpened() { return _numConnectionsOpened; }
    static int getNumConnectionsClosed() { return _numConnectionsClosed; }
@@ -297,10 +305,14 @@ public:
                                 const std::string &sslRootCerts);
 
 private:
+   void checkCompatibilityWithClientImpl();
+   bool tryDetectPreHelloClient(const char *compReqMetaDataBuf);
+
    static int _numConnectionsOpened;
    static int _numConnectionsClosed;
    uint64_t _clientId;  // UID of client connected to this communication stream
    ClientSessionData *_pClientSessionData;
+   bool _compatibilityCheckDone;
    };
 
 }

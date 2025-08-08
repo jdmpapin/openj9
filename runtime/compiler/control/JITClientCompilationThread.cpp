@@ -3575,6 +3575,7 @@ remoteCompile(J9VMThread *vmThread, TR::Compilation *compiler, TR_ResolvedMethod
 
       Trc_JITServerRemoteCompileRequest(vmThread, seqNo, compiler->signature(), compiler->getHotnessName());
 
+      client->checkCompatibilityWithServer();
       client->buildCompileRequest(
          persistentInfo->getClientUID(), seqNo, lastCriticalSeqNo, method, clazz, *entry->_optimizationPlan,
          detailsStr, details.getType(), unloadedClasses, illegalModificationList, classInfoTuple, optionsStr,
@@ -3824,7 +3825,6 @@ remoteCompile(J9VMThread *vmThread, TR::Compilation *compiler, TR_ResolvedMethod
          throw JITServer::StreamVersionIncompatible();
       else if (statusCode == compilationStreamMessageTypeMismatch)
          throw JITServer::StreamMessageTypeMismatch();
-      client->setVersionCheckStatus();
       }
    catch (const JITServer::StreamFailure &e)
       {

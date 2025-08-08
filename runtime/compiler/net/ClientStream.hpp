@@ -31,12 +31,6 @@
 
 namespace JITServer
 {
-enum VersionCheckStatus
-   {
-   NOT_DONE = 0,
-   PASSED = 1,
-   };
-
 /**
    @class ClientStream
    @brief Implementation of the communication API for a client asking for remote JIT compilations
@@ -83,17 +77,7 @@ public:
    template <typename... T>
    void buildCompileRequest(T... args)
       {
-      if (getVersionCheckStatus() == NOT_DONE)
-         {
-         _cMsg.setFullVersion(getJITServerVersion(), CONFIGURATION_FLAGS);
-         write(MessageType::compilationRequest, args...);
-         _cMsg.clearFullVersion();
-         }
-      else // getVersionCheckStatus() == PASSED
-         {
-         _cMsg.clearFullVersion(); // the compatibility check is done. We clear the version to save message size.
-         write(MessageType::compilationRequest, args...);
-         }
+      write(MessageType::compilationRequest, args...);
       }
 
    /**
@@ -143,6 +127,27 @@ public:
    template <typename ...T>
    void writeError(MessageType type, T... args)
       {
+      // This client stream might not have attempted compilation yet even if
+      // other client streams in this JVM have successfully connected to a
+      // compatible server. In that case, attempt a handshake here, since that's
+      // the first communication that the server expects when it accepts a new
+      // connection.
+      //
+      // For example, the error might be clientSessionTerminate, which may still
+      // be important to try to send even if this particular stream has not
+      // completed a handshake yet.
+      //
+      // Avoid throwing from here because it could cause std::terminate().
+      //
+      checkCompatibilityWithServerIgnoringErrors();
+
+      // Don't send errors to the server unless we've completed the handshake
+      // and determined that the server is compatible.
+      if (!_serverIsCompatible)
+         {
+         return;
+         }
+
       _cMsg.setType(type);
       if (type == MessageType::compilationInterrupted || type == MessageType::connectionTerminate)
          {
@@ -151,16 +156,6 @@ public:
       else
          setArgsRaw<T...>(_cMsg, args...);
       writeMessage(_cMsg);
-      }
-
-   VersionCheckStatus getVersionCheckStatus()
-      {
-      return _versionCheckStatus;
-      }
-
-   void setVersionCheckStatus()
-      {
-      _versionCheckStatus = PASSED;
       }
 
    /**
@@ -198,20 +193,35 @@ public:
       return _incompatibilityCount < INCOMPATIBILITY_COUNT_LIMIT;
       }
 
+   void checkCompatibilityWithServer()
+      {
+      if (!_compatibilityCheckDone)
+         {
+         checkCompatibilityWithServerImpl();
+         }
+      }
+
+   bool serverIsCompatible() const { return _serverIsCompatible; }
+
    // Statistics
    static int getNumConnectionsOpened() { return _numConnectionsOpened; }
    static int getNumConnectionsClosed() { return _numConnectionsClosed; }
 
 private:
+   void checkCompatibilityWithServerImpl();
+   void checkCompatibilityWithServerIgnoringErrors();
+
    static int _numConnectionsOpened;
    static int _numConnectionsClosed;
-   VersionCheckStatus _versionCheckStatus; // indicates whether a version checking has been performed
    static int _incompatibilityCount;
    static uint64_t _incompatibleStartTime; // Time when version incomptibility has been detected
    static const uint64_t RETRY_COMPATIBILITY_INTERVAL_MS; // (ms) When we should perform again a version compatibilty check
    static const int INCOMPATIBILITY_COUNT_LIMIT;
 
    static SSL_CTX *_sslCtx;
+
+   bool _compatibilityCheckDone;
+   bool _serverIsCompatible;
    };
 
 }

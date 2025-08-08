@@ -21,6 +21,7 @@
  *******************************************************************************/
 
 #include <string.h>
+#include <sstream>
 
 #include "control/JITServerCompilationThread.hpp"
 
@@ -1108,6 +1109,8 @@ TR::CompilationInfoPerThreadRemote::processEntry(TR_MethodToBeCompiled &entry, J
 
    try
       {
+      stream->checkCompatibilityWithClient();
+
       CompilationRequest req;
       std::string cacheName;
 
@@ -1146,6 +1149,56 @@ TR::CompilationInfoPerThreadRemote::processEntry(TR_MethodToBeCompiled &entry, J
       abortCompilation = true;
       deleteStream = true;
       }
+   catch (const JITServer::BadHelloFromClient &e)
+      {
+      if (TR::Options::getVerboseOption(TR_VerboseJITServer))
+         {
+         TR_VerboseLog::writeLineLocked(
+            TR_Vlog_JITServer, "compThreadID=%d: %s", getCompThreadId(), e.what());
+         }
+
+      // Stream failure is a close enough match for snap trace purposes.
+      Trc_JITServerStreamFailure(compThread, getCompThreadId(), __FUNCTION__, "", "", e.what());
+
+      abortCompilation = true;
+      deleteStream = true;
+
+      // Noisy warning. Print to the output of the server process. Some clients
+      // are too old to send the proper hello, and they won't be able to receive
+      // the failure reason, so it's important to print a helpful message
+      // *somewhere* even if no specific verbose output has been requested.
+      //
+      // TODO: Allow this warning to be quieted.
+      //
+      bool enableNoisyWarning = true;
+      if (enableNoisyWarning)
+         {
+         std::ostringstream noisyMsgStream;
+
+         noisyMsgStream << "warning: compThreadID=" << getCompThreadId() << ": ";
+         noisyMsgStream << "client " << e.clientIpAddr() << " sent a bad hello.";
+         noisyMsgStream << std::endl;
+
+         noisyMsgStream << "note: client " << e.clientIpAddr();
+         noisyMsgStream << " may not be an OpenJ9 JIT client.";
+         noisyMsgStream << std::endl;
+
+         // TODO: fill in the correct version.
+         noisyMsgStream << "note: client " << e.clientIpAddr();
+         noisyMsgStream << " may be an OpenJ9 JIT client from ";
+         noisyMsgStream << "OpenJ9 version 0.XX or earlier.";
+         noisyMsgStream << std::endl;
+
+         // This part of the message should be corrected if the exact build
+         // match requirement is ever relaxed in the future.
+         noisyMsgStream << "note: this server is only compatible with ";
+         noisyMsgStream << "clients running the same OpenJ9 JVM build.";
+         noisyMsgStream << std::endl;
+
+         std::string noisyMsg = noisyMsgStream.str();
+         fprintf(stderr, "%s", noisyMsg.c_str());
+         }
+      }
    catch (const JITServer::StreamVersionIncompatible &e)
       {
       if (TR::Options::getVerboseOption(TR_VerboseJITServer) || TR::Options::getVerboseOption(TR_VerboseJITServerConns))
@@ -1153,7 +1206,8 @@ TR::CompilationInfoPerThreadRemote::processEntry(TR_MethodToBeCompiled &entry, J
 
       Trc_JITServerStreamVersionIncompatible(compThread,  getCompThreadId(), __FUNCTION__, "", "", e.what());
 
-      stream->writeError(compilationStreamVersionIncompatible);
+      // TODO: delete this error
+      // stream->writeError(compilationStreamVersionIncompatible);
       abortCompilation = true;
       deleteStream = true;
       }
