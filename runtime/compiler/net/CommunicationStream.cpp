@@ -23,8 +23,11 @@
 #include "control/CompilationRuntime.hpp"
 #include "control/Options.hpp" // TR::Options::useCompressedPointers()
 #include "env/CompilerEnv.hpp" // for TR::Compiler->target.is64Bit()
+#include "infra/String.hpp" // for TR::snprintfNoTrunc()
 #include "net/CommunicationStream.hpp"
 
+#include <sys/socket.h> // for struct sockaddr
+#include <arpa/inet.h> // for inet_ntop()
 
 namespace JITServer
 {
@@ -128,6 +131,78 @@ CommunicationStream::writeMessage(Message &msg)
    // write serialized message to the socket
    writeBlocking(serialMsg, msg.serializedSize());
    msg.clearForWrite();
+   }
+
+void
+CommunicationStream::getJITServerBuildId(char *dest, size_t size)
+   {
+   // Override the build ID to impersonate another build. This is to be used
+   // very judiciously. The intended use is to make a special fix build that is
+   // the same as an existing build but that also includes a (compatible!) fix.
+   //
+   // To get the build ID from an existing build, -Xjit:verbose={jitserver} will
+   // print it within the first few lines. <--- TODO TODO TODO TODO
+   //
+   // If you're building with this set, you should manually verify that the new
+   // build can successfully establish a connection with the impersonated build.
+   //
+   const char *impersonatedBuildId = NULL;
+
+   if (impersonatedBuildId != NULL)
+      {
+      TR::snprintfNoTrunc(dest, size, "%s", impersonatedBuildId);
+      }
+   else
+      {
+      // :0: is to avoid collisions if this format ever changes in the future.
+      TR::snprintfNoTrunc(
+         dest,
+         size,
+         "JITServerBuildId:0:vm=%s:jit=%s",
+         EsBuildVersionString,
+         TR_BUILD_NAME);
+      }
+   }
+
+std::string
+CommunicationStream::getConnIpAddr() const
+   {
+   struct sockaddr addr;
+   socklen_t addrLen = sizeof(addr);
+   if (getpeername(_connfd, &addr, &addrLen) < 0)
+      {
+      std::string err;
+      err += "<address unknown: getpeername: ";
+      err += strerror(errno);
+      err += ">";
+      return err;
+      }
+
+   const char *ntopResult = NULL;
+   char buf[128];
+
+   if (addr.sa_family == AF_INET)
+      {
+      auto inetAddr = (struct sockaddr_in*)&addr;
+      ntopResult = inet_ntop(AF_INET, &inetAddr->sin_addr, buf, sizeof(buf));
+      }
+   else if (addr.sa_family == AF_INET6)
+      {
+      auto inet6Addr = (struct sockaddr_in6*)&addr;
+      ntopResult = inet_ntop(AF_INET6, &inet6Addr->sin6_addr, buf, sizeof(buf));
+      }
+   else
+      {
+      return "<address unknown: unexpected address family>";
+      }
+
+   // inet_ntop must succeed. The only possible errors are an unsupported
+   // address family or insufficient buffer space.
+   TR_ASSERT_FATAL(
+      ntopResult == buf,
+      "failed to convert client IP address to string");
+
+   return buf;
    }
 
 std::string

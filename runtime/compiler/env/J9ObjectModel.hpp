@@ -156,6 +156,12 @@ public:
    */
    bool compressObjectReferences();
 
+   /**
+    * @brief Determine whether object references are compressed in the current
+    * process, ignoring any other possibly relevant process (e.g. JIT client).
+    */
+   bool compressObjectReferencesInCurrentProcess() { return _compressObjectReferences; }
+
    int32_t getObjectAlignmentInBytes();
 
    /**

@@ -24,6 +24,7 @@
 #define COMMUNICATION_STREAM_H
 
 #include <unistd.h>
+#include "j9version.h"
 #include "infra/Statistics.hpp"
 #include "net/LoadSSLLibs.hpp"
 #include "net/Message.hpp"
@@ -33,6 +34,62 @@
 
 namespace JITServer
 {
+// The specifics around the precise version or set of extensions is worked out
+// separately after a connection is successfully established.
+enum HandshakeCpuArch
+   {
+   HandshakeCpuArch_PPC64LE = 0,
+   HandshakeCpuArch_X86_64 = 1,
+   HandshakeCpuArch_Z = 2, // 64-bit
+   HandshakeCpuArch_AArch64 = 3,
+   };
+
+// Currently only Linux is supported.
+enum HandshakeOs
+   {
+   HandshakeOs_Linux = 0,
+   };
+
+enum HandshakeCompressedRefs
+   {
+   HandshakeCompressedRefs_Disabled = 0,
+   HandshakeCompressedRefs_Enabled = 1,
+   };
+
+// Avoid all multiples of 4 to allow clients to recognize when a response is
+// coming from a pre-hello server.
+enum HandshakeResponseCode
+   {
+   HandshakeResponseCode_Incompatible = 1,
+   HandshakeResponseCode_OK = 2,
+   };
+
+// For communicating with clients/servers from before the new handshake.
+// Just compatible enough to communicate a version mismatch to the old build.
+// These are values that are consistent in all old release versions.
+
+enum BackCompatMessageType
+   {
+   BackCompatMessageType_compilationFailure = 1,
+   };
+
+enum BackCompatDataType
+   {
+   BackCompatDataType_UINT32 = 2,
+   BackCompatDataType_UINT64 = 3,
+   };
+
+enum BackCompatJITServerCompatibilityFlags
+   {
+   BackCompatJITServerJavaVersionMask = 0x00000FFF,
+   BackCompatJITServerCompressedRef   = 0x00001000,
+   };
+
+inline uint32_t backCompatEncodeVersion(uint8_t major, uint16_t minor)
+   {
+   return (uint32_t)major << 24 | (uint32_t)minor << 8;
+   }
+
 // When adding another compatibility mask/flag, also add a new message in
 // CommunicationStream::showFullVersionIncompatibility that handles the new enum value.
 enum JITServerCompatibilityFlags
@@ -57,6 +114,45 @@ public:
 #if defined(MESSAGE_SIZE_STATS)
    static TR_Stats _msgSizeStats[MessageType::MessageType_MAXTYPE];
 #endif /* defined(MESSAGE_SIZE_STATS) */
+
+   static HandshakeCpuArch getJITServerCpuArch()
+      {
+#if !defined(TR_TARGET_64BIT)
+#error "JITServer supports 64-bit only"
+#elif defined(TR_TARGET_POWER)
+#if !defined(__LITTLE_ENDIAN__)
+#error "JITServer supports little-endian Power, but not big-endian"
+#endif
+      return HandshakeCpuArch_PPC64LE;
+#elif defined(TR_TARGET_X86)
+      return HandshakeCpuArch_X86_64;
+#elif defined(TR_TARGET_S390)
+      return HandshakeCpuArch_Z;
+#elif defined(TR_TARGET_ARM64)
+      return HandshakeCpuArch_AArch64;
+#else
+#error "JITServer does not support this target"
+#endif
+      }
+
+   static HandshakeOs getJITServerOs()
+      {
+#if defined(LINUX)
+      return HandshakeOs_Linux;
+#else
+#error "JITServer does not support this OS"
+#endif
+      }
+
+   /**
+    * \brief Get the JITServer build ID.
+    *
+    * The destination buffer must be "large enough."
+    *
+    * \param dest[out] destination buffer
+    * \param size the length of \p dest in bytes
+    */
+   static void getJITServerBuildId(char *dest, size_t size);
 
    static void initConfigurationFlags();
 
@@ -112,28 +208,20 @@ protected:
    void writeMessage(Message &msg);
 
    int getConnFD() const { return _connfd; }
+   std::string getConnIpAddr() const;
 
    BIO *_ssl; // SSL connection, null if not using SSL
    int _connfd;
    ServerMessage _sMsg;
    ClientMessage _cMsg;
 
-   // When increasing a version number here (especially MINOR_NUMBER), please
-   // also change the ID comment to a unique value, preferably one that has
-   // been randomly generated, e.g. using
-   //
-   //     $ head -c 15 /dev/random | base64
-   //
-   // This (all but) ensures that two independent increments will conflict,
-   // when otherwise they might have identical diffs, in which case git is
-   // likely to lose an increment when merging/rebasing/etc.
-   //
-   static const uint8_t MAJOR_NUMBER = 1;
-   static const uint16_t MINOR_NUMBER = 96; // ID: cBhbS9766IxUvUVAy0nj
-   static const uint8_t PATCH_NUMBER = 0;
-   static uint32_t CONFIGURATION_FLAGS;
+   // There is no need to update this version. TODO: ~elaborate~ just delete...
+   static const uint8_t MAJOR_NUMBER = 1; // TODO: delete
+   static const uint16_t MINOR_NUMBER = 500; // TODO: delete
+   static const uint16_t PATCH_NUMBER = 0; // TODO: delete
+   static const uint32_t VERSION = 0; // TODO: delete
+   static uint32_t CONFIGURATION_FLAGS; // TODO: delete
 
-private:
    void readBlocking(char *data, size_t size)
       {
       size_t totalBytesRead = 0;
@@ -171,13 +259,13 @@ private:
          }
       }
 
-   int32_t readOnceBlocking(char *data, size_t size)
+   int32_t readOnceBlocking(char *data, size_t size, bool allowImmediateEof = false)
       {
       int32_t bytesRead = -1;
       if (_ssl)
          {
          bytesRead = (*OBIO_read)(_ssl, data, size);
-         if (bytesRead <= 0)
+         if (bytesRead <= 0 && !(allowImmediateEof && bytesRead == 0))
             {
             (*OERR_print_errors_fp)(stderr);
             throw JITServer::StreamFailure("JITServer I/O error: read error", (*OBIO_should_retry)(_ssl));
@@ -188,6 +276,13 @@ private:
          while (true)
             {
             bytesRead = read(_connfd, data, size);
+            if (allowImmediateEof && bytesRead == 0)
+               {
+               // For allowImmediateEof, EOF is considered a successful read.
+               _numConsecutiveReadErrorsOfSameType = 0;
+               break;
+               }
+
             if (bytesRead <= 0)
                {
                if (EINTR != errno)
@@ -255,6 +350,127 @@ private:
             }
          }
       }
+
+   // Simple byte buffer serialization/deserialization util for handshake.
+   struct ByteBufReader
+      {
+      const char *_cursor;
+      const char *_end;
+
+      ByteBufReader(const char *buf, size_t size) : _cursor(buf), _end(buf + size) {}
+
+      size_t remaining() const { return (size_t)(_end - _cursor); }
+
+      void read(void *dest, size_t n)
+         {
+         TR_ASSERT_FATAL(remaining() >= n, "insufficient remaining data");
+         memcpy(dest, _cursor, n);
+         _cursor += n;
+         }
+
+      uint8_t readU8()
+         {
+         uint8_t result;
+         read(&result, 1);
+         return result;
+         }
+
+      uint16_t readU16BE()
+         {
+         uint16_t result = 0;
+         result |= (uint16_t)readU8() << 8;
+         result |= (uint16_t)readU8();
+         return result;
+         }
+
+      uint32_t readU32BE()
+         {
+         uint32_t result = 0;
+         result |= (uint32_t)(uint8_t)readU8() << 24;
+         result |= (uint32_t)(uint8_t)readU8() << 16;
+         result |= (uint32_t)(uint8_t)readU8() << 8;
+         result |= (uint32_t)(uint8_t)readU8();
+         return result;
+         }
+
+      bool tryReadU8(uint8_t &dest)
+         {
+         return remaining() < 1 ? (dest = 0, false) : (dest = readU8(), true);
+         }
+
+      bool tryReadU16BE(uint16_t &dest)
+         {
+         return remaining() < 2 ? (dest = 0, false) : (dest = readU16BE(), true);
+         }
+
+      bool tryReadU32BE(uint32_t &dest)
+         {
+         return remaining() < 4 ? (dest = 0, false) : (dest = readU32BE(), true);
+         }
+
+      // Native-endian. Needed for back-compat mock compilationRequest message.
+      uint16_t readU16NE()
+         {
+         uint16_t result;
+         read(&result, sizeof(result));
+         return result;
+         }
+
+      uint32_t readU32NE()
+         {
+         uint32_t result;
+         read(&result, sizeof(result));
+         return result;
+         }
+      };
+
+   struct ByteBufWriter
+      {
+      char *_cursor;
+      char *_end;
+
+      ByteBufWriter(char *buf, size_t size) : _cursor(buf), _end(buf + size) {}
+
+      size_t remaining() const { return (size_t)(_end - _cursor); }
+
+      void write(void *src, size_t n)
+         {
+         TR_ASSERT_FATAL(remaining() >= n, "insufficient remaining space");
+         memcpy(_cursor, src, n);
+         _cursor += n;
+         }
+
+      void writeU8(uint8_t value)
+         {
+         write(&value, 1);
+         }
+
+      void writeU16BE(uint16_t value)
+         {
+         writeU8((value >> 8) & 0xff);
+         writeU8(value & 0xff);
+         }
+
+      void writeU32BE(uint32_t value)
+         {
+         writeU8((value >> 24) & 0xff);
+         writeU8((value >> 16) & 0xff);
+         writeU8((value >> 8) & 0xff);
+         writeU8(value & 0xff);
+         }
+
+      // Native endian. Needed for back-compat mock compilationRequest message.
+      void writeU16NE(uint16_t value)
+         {
+         write(&value, sizeof(value));
+         }
+
+      void writeU32NE(uint32_t value)
+         {
+         write(&value, sizeof(value));
+         }
+      };
+
    }; // class CommunicationStream
 }; // namespace JITServer
 

@@ -3821,7 +3821,7 @@ void TR::CompilationInfo::stopCompilationThreads()
          {
          JITServer::ClientStream client(getPersistentInfo());
          client.writeError(JITServer::MessageType::clientSessionTerminate, getPersistentInfo()->getClientUID());
-         if (TR::Options::getVerboseOption(TR_VerboseJITServer))
+         if (client.serverIsCompatible() && TR::Options::getVerboseOption(TR_VerboseJITServer))
             TR_VerboseLog::writeLineLocked(TR_Vlog_JITServer, "Sent clientSessionTerminate message");
          }
       catch (const JITServer::StreamFailure &e)
