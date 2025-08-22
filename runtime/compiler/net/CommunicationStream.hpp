@@ -192,19 +192,27 @@ private:
                {
                if (EINTR != errno)
                   {
-		  if((errno == _lastReadError) && (EAGAIN != errno))
-		     _numConsecutiveReadErrorsOfSameType++;
-		  else
-		     _numConsecutiveReadErrorsOfSameType = 0;   // If its a new error or errno is EAGAIN then reset the counter
-					      // For EAGAIN we set the flag retryConnectionImmediately to true in the below line
-		  _lastReadError = errno;
-                  throw JITServer::StreamFailure("JITServer I/O error: read error: " +
-                                                 (bytesRead ? std::string(strerror(errno)) : "connection closed by peer"), EAGAIN == errno);
+                  if ((errno == _lastReadError) && (EAGAIN != errno))
+                     {
+                     _numConsecutiveReadErrorsOfSameType++;
+                     }
+                  else
+                     {
+                     // If its a new error or errno is EAGAIN then reset the counter.
+                     // For EAGAIN we set the flag retryConnectionImmediately to true in the below line.
+                     _numConsecutiveReadErrorsOfSameType = 0;
+                     }
+
+                  _lastReadError = errno;
+                  throw JITServer::StreamFailure(
+                     "JITServer I/O error: read error: "
+                        + (bytesRead ? std::string(strerror(errno)) : "connection closed by peer"),
+                     EAGAIN == errno);
                   }
                }
             else
                {
-	       _numConsecutiveReadErrorsOfSameType = 0;  // Successfull read so reset read retry counter
+               _numConsecutiveReadErrorsOfSameType = 0;  // Successfull read so reset read retry counter
                break;
                }
             }
