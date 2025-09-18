@@ -55,6 +55,7 @@
 #include "il/Node_inlines.hpp"
 #include "ilgen/IlGenRequest.hpp"
 #include "infra/List.hpp"
+#include "infra/String.hpp"
 #include "optimizer/Inliner.hpp"
 #include "optimizer/OptimizationManager.hpp"
 #include "optimizer/Optimizer.hpp"
@@ -137,6 +138,52 @@ const char * callingContextNames[] = {
    "ESC_CHECK_DEFSUSES_CONTEXT",
    "LAST_CONTEXT"
 };
+
+namespace {
+
+void sha256(const char *s, uint8_t (&hash)[32])
+   {
+   EVP_MD_CTX *ctx = OEVP_MD_CTX_new();
+   TR_ASSERT_FATAL(ctx != NULL, "failed to create digest context");
+
+   bool digestInitOK = OEVP_DigestInit_ex(ctx, OEVP_sha256(), NULL) != 0;
+   TR_ASSERT_FATAL(digestInitOK, "failed to initialize sha256 digest");
+
+   int ok = OEVP_DigestUpdate(ctx, s, strlen(s));
+   TR_ASSERT_FATAL(ok, "EVP_DigestUpdate() failed");
+
+   unsigned int hashSize = 0;
+   ok = OEVP_DigestFinal_ex(ctx, hash, &hashSize);
+   TR_ASSERT_FATAL(ok, "EVP_DigestFinal() failed");
+   TR_ASSERT_FATAL(hashSize == 256 / 8, "Invalid hash size");
+
+   OEVP_MD_CTX_free(ctx);
+   }
+
+struct HashPrefix
+   {
+   uint64_t _mask;
+   uint64_t _bits;
+   };
+
+HashPrefix parseHashPrefix(const char *s)
+   {
+   size_t n = strlen(s);
+   TR_ASSERT_FATAL(n <= 64, "TR_hashPrefix: too many bits!");
+
+   HashPrefix result = {};
+   char c = '\0';
+   for (uint64_t i = 0; (c = *s++) != '\0'; i++)
+      {
+      TR_ASSERT_FATAL(c == '0' || c == '1', "TR_hashPrefix: binary digits only");
+      result._mask |= (uint64_t)1 << i;
+      result._bits |= (uint64_t)(c - '0') << i;
+      }
+
+   return result;
+   }
+
+} // anonymous namespace
 
 #if defined(J9VM_OPT_JITSERVER)
 bool J9::Compilation::_outOfProcessCompilation = false;
@@ -262,6 +309,40 @@ J9::Compilation::Compilation(int32_t id,
    // memory. Const refs for known objects reachable from a custom thunk would
    // be attributed to the handle class in java/lang/invoke, which is permanent.
    self()->getOptions()->setOption(TR_EnableConstRefs, false);
+#else
+    static const char * const hashPrefixStr = feGetEnv("TR_hashPrefix");
+    if (hashPrefixStr != NULL)
+       {
+       static const HashPrefix hashPrefix = parseHashPrefix(hashPrefixStr);
+
+       static const char * const hashPrefixStr2 = feGetEnv("TR_hashPrefix2");
+       static const HashPrefix hashPrefix2 = parseHashPrefix(hashPrefixStr2 == NULL ? "" : hashPrefixStr2);
+
+       char compName[1024];
+       TR::snprintfTrunc(compName, sizeof(compName), "%s %s", self()->signature(), self()->getHotnessName());
+
+       uint8_t fullHashBytes[32];
+       sha256(compName, fullHashBytes);
+
+       // truncate to 64-bit, treating the full hash as little-endian
+       uint64_t hash = 0;
+       for (int i = 0; i < 8; i++)
+          {
+          hash |= fullHashBytes[i] << (8 * i);
+          }
+
+       if ((hash & hashPrefix._mask) == hashPrefix._bits
+           || (hashPrefix2._mask != 0 && (hash & hashPrefix2._mask) == hashPrefix2._bits))
+          {
+          static const bool doPrint = feGetEnv("TR_printHashPrefixMatches") != NULL;
+          if (doPrint)
+             {
+             fprintf(stderr, "jdmp hash prefix match: %s\n", compName);
+             }
+
+          self()->getOptions()->setOption(TR_EnableConstRefs, false);
+          }
+       }
 #endif
 
    // Const provenance is only needed for const refs.

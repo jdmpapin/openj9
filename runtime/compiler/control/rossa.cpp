@@ -1784,7 +1784,7 @@ onLoadInternal(
       }
 
 #if defined(J9VM_OPT_JITSERVER)
-   if (compInfo->useSSL())
+   if (compInfo->useSSL() || true)
       {
       if (!JITServer::loadLibsslAndFindSymbols())
          return -1;
