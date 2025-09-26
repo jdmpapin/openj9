@@ -10894,7 +10894,8 @@ TR::CompilationInfo::compilationEnd(J9VMThread * vmThread, TR::IlGeneratorMethod
       //
       if (oldStartPC)
          {
-         if (TR::Options::getVerboseOption(TR_VerboseCodeCache))
+         static const bool verboseRecompile = feGetEnv("TR_verboseRecompile") != NULL;
+         if (TR::Options::getVerboseOption(TR_VerboseCodeCache) || verboseRecompile)
             {
             OMR::CodeCacheMethodHeader *oldMethodHeader = getCodeCacheMethodHeader((char*)oldStartPC, 32, NULL);
             OMR::CodeCacheMethodHeader *recompiledMethodHeader = getCodeCacheMethodHeader((char*)startPC, 32, NULL);
