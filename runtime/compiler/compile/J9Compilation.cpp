@@ -346,10 +346,12 @@ J9::Compilation::Compilation(int32_t id,
 #endif
 
    // Const provenance is only needed for const refs.
+#if 0
    if (!self()->useConstRefs())
       {
       self()->getOptions()->setOption(TR_DisableConstProvenance);
       }
+#endif
 
    // Add known object index to parm 0 so that other optmizations can be unlocked.
    // It is safe to do so because method and method symbols of a archetype specimen
