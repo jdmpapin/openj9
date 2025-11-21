@@ -10274,6 +10274,14 @@ TR::CompilationInfoPerThreadBase::compile(
          _compInfo.getHWProfiler()->registerRecords(metaData, compiler);
          }
 
+      static const char * const delayMs = feGetEnv("TR_jdmpHackCHTableCommitDelayMs");
+      if (delayMs != NULL)
+         {
+         fprintf(stderr, "jdmp CH table commit delay start\n");
+         usleep(1000 * atoi(delayMs));
+         fprintf(stderr, "jdmp CH table commit delay end\n");
+         }
+
       TR_CHTable *chTable = compiler->getCHTable();
       if (chTable && !chTable->canSkipCommit(compiler))
          {

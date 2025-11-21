@@ -9924,6 +9924,14 @@ void JNICALL Java_java_lang_invoke_MutableCallSite_invalidate
    if (verbose)
       TR_VerboseLog::writeLineLocked(TR_Vlog_HK, "%x hook %s vmThread=%p ", threadID, "MutableCallSite.invalidate", vmThread);
 
+   static const char * const delayMs = feGetEnv("TR_jdmpHackMCSInvalidateDelayMs");
+   if (delayMs != NULL)
+      {
+      fprintf(stderr, "jdmp MCS.invalidate delay start\n");
+      usleep(1000 * atoi(delayMs));
+      fprintf(stderr, "jdmp MCS.invalidate delay end\n");
+      }
+
    jint numSites = env->GetArrayLength(cookieArrayObject);
    if (numSites <= 0)
       {
